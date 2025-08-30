@@ -1,5 +1,5 @@
-// server.js - Server per Render.com con supporto Enterprise
-// Dashboard e automazione per scraper standard e enterprise
+// server.js - Server per Render.com con supporto Enterprise e Stock Checker
+// Dashboard e automazione per scraper standard, enterprise e stock checker
 
 const express = require('express');
 const fs = require('fs');
@@ -95,6 +95,8 @@ app.get('/', (req, res) => {
         button:hover { background: #5a67d8; }
         button.enterprise { background: #f59e0b; }
         button.enterprise:hover { background: #d97706; }
+        button.stock { background: #10b981; }
+        button.stock:hover { background: #059669; }
         .logs { 
           background: #1a1a1a; 
           color: #0f0; 
@@ -137,6 +139,13 @@ app.get('/', (req, res) => {
           background: linear-gradient(90deg, #667eea, #764ba2);
           transition: width 0.3s;
         }
+        .alert {
+          background: #fef3c7;
+          border-left: 4px solid #f59e0b;
+          padding: 15px;
+          margin: 15px 0;
+          border-radius: 5px;
+        }
       </style>
     </head>
     <body>
@@ -178,14 +187,22 @@ app.get('/', (req, res) => {
           <h2>⚡ Controlli Manuali</h2>
           
           <div style="margin: 15px 0;">
-            <strong>Standard Mode (veloce):</strong><br>
+            <strong>🟢 Stock Check (SOLO disponibilità - sicuro):</strong><br>
+            <button class="stock" onclick="runStockCheck(10)">Test 10 prodotti</button>
+            <button class="stock" onclick="runStockCheck(100)">Check 100 prodotti</button>
+            <button class="stock" onclick="runStockCheck(500)">Check 500 prodotti</button>
+            <button class="stock" onclick="runStockCheck(2500)">Sessione 8 ore (2500)</button>
+          </div>
+          
+          <div style="margin: 15px 0;">
+            <strong>Standard Mode (scraping completo veloce):</strong><br>
             <button onclick="runScrape(5)">🧪 Test (5 pagine)</button>
             <button onclick="runScrape(20)">🔄 Sync (20 pagine)</button>
             <button onclick="runScrape(50)">📈 Medio (50 pagine)</button>
           </div>
           
           <div style="margin: 15px 0;">
-            <strong>Enterprise Mode (con checkpoint):</strong><br>
+            <strong>Enterprise Mode (scraping completo con checkpoint):</strong><br>
             <button class="enterprise" onclick="runScrape(100)">📦 Extended (100 pagine)</button>
             <button class="enterprise" onclick="runScrape(200)">🏭 Full (200 pagine)</button>
             <button class="enterprise" onclick="runScrape(999)">⚠️ Completo (TUTTE)</button>
@@ -197,11 +214,20 @@ app.get('/', (req, res) => {
             <button onclick="clearLogs()">🗑️ Clear Logs</button>
           </div>
           
+          <div class="alert">
+            <strong>⚠️ ATTENZIONE CRON MODIFICATI:</strong><br>
+            • <del>Sync ogni 6 ore</del> → <strong>DISABILITATO</strong> (rischio ban)<br>
+            • <del>Full scan notturno</del> → <strong>Solo domenica alle 3:00</strong> (ogni 2 settimane)<br>
+            • <strong>NUOVO:</strong> Stock check alle 5:00 e 15:00 (solo disponibilità)<br>
+            • Stock check rispetta crawl-delay di 12 secondi tra prodotti
+          </div>
+          
           <div class="info">
-            <strong>ℹ️ Scheduling Automatico:</strong><br>
-            • Sync veloce ogni 6 ore (20 pagine) - Standard Mode<br>
-            • Full scan notturno alle 2:00 (200 pagine) - Enterprise Mode<br>
-            • Checkpoint automatico ogni 5 pagine in Enterprise Mode<br>
+            <strong>ℹ️ Scheduling Automatico Aggiornato:</strong><br>
+            • Stock check mattina alle 5:00 (2500 prodotti, ~8 ore)<br>
+            • Stock check pomeriggio alle 15:00 (2500 prodotti, ~8 ore)<br>
+            • Full scraping: domenica alle 3:00 (ogni 2 settimane)<br>
+            • WP All Import processa alle 6:00 e 16:00<br>
             • Server: Render.com ${process.env.RENDER ? '<span class="status ok">Production</span>' : '<span class="status warn">Development</span>'}<br>
             • Plan: ${process.env.RENDER_PLAN || 'Free'}<br>
             • Base URL: <code>${base}</code><br>
@@ -217,6 +243,16 @@ app.get('/', (req, res) => {
             <div class="progress">
               <div class="progress-bar" style="width: ${(stats.checkpoint.currentPage / stats.checkpoint.totalPages * 100).toFixed(1)}%"></div>
             </div>
+          </div>
+          ` : ''}
+          
+          ${stats.stockProgress ? `
+          <div class="info" style="background: #d1fae5; border-color: #10b981;">
+            <strong>📊 Stock Check in Progress:</strong><br>
+            • Prodotti controllati: ${stats.stockProgress.currentIndex}/${stats.stockProgress.totalProducts || 'N/A'}<br>
+            • Aggiornati: ${stats.stockProgress.stats?.updated || 0}<br>
+            • Out of stock: ${stats.stockProgress.stats?.outOfStock?.length || 0}<br>
+            • Ultimo check: ${new Date(stats.stockProgress.timestamp).toLocaleString('it-IT')}<br>
           </div>
           ` : ''}
         </div>
@@ -252,6 +288,31 @@ app.get('/', (req, res) => {
             
             if (data.status === 'started') {
               alert(\`✅ Scraping avviato!\\nModalità: \${mode}\\nPagine: \${pages}\\nPID: \${data.pid}\`);
+              setTimeout(() => location.reload(), 3000);
+            } else {
+              alert('❌ Errore: ' + (data.error || 'Sconosciuto'));
+            }
+          } catch (e) {
+            alert('❌ Errore di connessione');
+          } finally {
+            btn.disabled = false;
+            btn.textContent = btn.textContent.replace('⏳ Avvio...', '');
+          }
+        }
+        
+        async function runStockCheck(products) {
+          if (!confirm(\`Avviare stock check di \${products} prodotti?\\nTempo stimato: \${Math.round(products * 12 / 60)} minuti\`)) return;
+          
+          const btn = event.target;
+          btn.disabled = true;
+          btn.textContent = '⏳ Avvio...';
+          
+          try {
+            const res = await fetch(\`/api/stock-check?products=\${products}\`, { method: 'POST' });
+            const data = await res.json();
+            
+            if (data.status === 'started') {
+              alert(\`✅ Stock check avviato!\\nProdotti: \${products}\\nPID: \${data.pid}\`);
               setTimeout(() => location.reload(), 3000);
             } else {
               alert('❌ Errore: ' + (data.error || 'Sconosciuto'));
@@ -324,6 +385,29 @@ app.post('/api/scrape', (req, res) => {
     pid: scraper.pid,
     script,
     mode: pages > 50 ? 'enterprise' : 'standard'
+  });
+});
+
+// NUOVA API: Avvia stock check
+app.post('/api/stock-check', (req, res) => {
+  const products = req.query.products || '100';
+  
+  console.log(`[API] Avvio stock check: ${products} prodotti`);
+  
+  const checker = spawn('node', ['stock-checker-light.js', products], {
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  
+  checker.stdout.on('data', (data) => console.log(`[STOCK-CHECK]: ${data}`));
+  checker.stderr.on('data', (data) => console.error(`[STOCK-CHECK ERROR]: ${data}`));
+  checker.unref();
+  
+  res.json({ 
+    status: 'started', 
+    products, 
+    pid: checker.pid,
+    estimatedTime: `${Math.round(products * 12 / 60)} minuti`
   });
 });
 
@@ -402,7 +486,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Helper: Get complete stats
+// Helper: Get complete stats (AGGIORNATO con stock progress)
 function getStats() {
   const stats = {
     totalProducts: 0,
@@ -414,6 +498,7 @@ function getStats() {
     imagesSize: 0,
     logs: 'Caricamento...',
     checkpoint: null,
+    stockProgress: null,  // NUOVO
     uptime: formatUptime(process.uptime()),
     memory: getMemoryStats(),
     cpu: getCPULoad(),
@@ -469,6 +554,12 @@ function getStats() {
         stats.checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
       }
       
+      // Stock checker progress (NUOVO)
+      const stockProgressPath = path.join(outputDir, 'stock_checker_progress.json');
+      if (fs.existsSync(stockProgressPath)) {
+        stats.stockProgress = JSON.parse(fs.readFileSync(stockProgressPath, 'utf8'));
+      }
+      
       // Logs
       const logFiles = files.filter(f => f.endsWith('.log')).sort();
       if (logFiles.length > 0) {
@@ -513,27 +604,56 @@ function getDiskStats() {
   return { used: 'N/A', total: 'N/A' };
 }
 
-// CRON JOBS per automazione
+// ========================================
+// CRON JOBS AGGIORNATI (PIÙ SICURI)
+// ========================================
 if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
-  // Sync veloce ogni 6 ore (standard mode)
-  cron.schedule('0 */6 * * *', () => {
-    console.log('[CRON] Avvio sync programmato (20 pagine - Standard Mode)...');
-    spawn('node', ['scraper_componenti_wpai_min.js', '20'], {
+  
+  // ❌ DISABILITATO - Sync ogni 6 ore (RISCHIO BAN)
+  // cron.schedule('0 */6 * * *', () => {
+  //   console.log('[CRON] DISABILITATO - Rischio ban');
+  // });
+  
+  // ✅ Stock check mattina alle 5:00 (SOLO disponibilità)
+  cron.schedule('0 5 * * *', () => {
+    console.log('[CRON] Avvio stock check mattutino (2500 prodotti)...');
+    spawn('node', ['stock-checker-light.js', '2500'], {
       detached: true,
       stdio: 'ignore'
     }).unref();
   });
   
-  // Full scan notturno (enterprise mode)
-  cron.schedule('0 2 * * *', () => {
-    console.log('[CRON] Avvio full scan notturno (200 pagine - Enterprise Mode)...');
-    spawn('node', ['scraper_componenti_enterprise.js', '200'], {
+  // ✅ Stock check pomeriggio alle 15:00 (SOLO disponibilità)
+  cron.schedule('0 15 * * *', () => {
+    console.log('[CRON] Avvio stock check pomeridiano (2500 prodotti)...');
+    spawn('node', ['stock-checker-light.js', '2500'], {
       detached: true,
       stdio: 'ignore'
     }).unref();
   });
   
-  console.log('⏰ Cron jobs attivati (produzione)');
+  // ✅ Full scan SOLO domenica alle 3:00 (ogni 2 settimane)
+  cron.schedule('0 3 * * 0', () => {
+    // Calcola numero settimana per fare ogni 2 settimane
+    const weekNumber = Math.floor(Date.now() / (7 * 24 * 60 * 60 * 1000));
+    if (weekNumber % 2 === 0) {
+      console.log('[CRON] Avvio full scan bisettimanale (200 pagine)...');
+      spawn('node', ['scraper_componenti_enterprise.js', '200'], {
+        detached: true,
+        stdio: 'ignore'
+      }).unref();
+    } else {
+      console.log('[CRON] Settimana dispari, skip full scan');
+    }
+  });
+  
+  console.log('⏰ Cron jobs SICURI attivati:');
+  console.log('   - Stock check: 5:00 e 15:00 (solo disponibilità)');
+  console.log('   - Full scraping: domenica 3:00 (ogni 2 settimane)');
+  console.log('   - Sync ogni 6 ore: DISABILITATO (rischio ban)');
+  
+} else {
+  console.log('⏰ Cron jobs NON attivati (development mode)');
 }
 
 // Graceful shutdown
@@ -550,4 +670,11 @@ app.listen(PORT, () => {
   console.log(`Server: http://localhost:${PORT}`);
   console.log(`Mode: ${process.env.NODE_ENV || 'development'}`);
   console.log(`Render: ${process.env.RENDER ? 'Yes' : 'No'}`);
+  
+  if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
+    console.log('\n⚠️  CRON MODIFICATI PER SICUREZZA:');
+    console.log('• Sync ogni 6 ore: DISABILITATO');
+    console.log('• Stock check: 5:00 e 15:00');
+    console.log('• Full scan: solo domenica ogni 2 settimane');
+  }
 });
