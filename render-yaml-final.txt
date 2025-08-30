@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: scraper-componenti
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: standard  # $25/mese per 4GB RAM necessari per 4000+ prodotti
+    region: frankfurt
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RENDER
+        value: true
+      - key: RENDER_PLAN
+        value: standard
+      - key: PORT
+        value: 10000
+      - key: IMAGES_BASE_URL
+        value: https://scraper-componenti.onrender.com/images
+      - key: USE_ENTERPRISE
+        value: false  # Imposta true per forzare sempre enterprise mode
+    healthCheckPath: /healthz
+    numInstances: 1
+    buildCommand: npm install
+    startCommand: node server.js

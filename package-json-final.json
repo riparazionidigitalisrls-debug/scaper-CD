@@ -1,0 +1,26 @@
+{
+  "name": "scraper-componenti-wpai",
+  "version": "2.0.0",
+  "description": "Scraper componenti digitali con supporto Enterprise per alti volumi",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "scrape": "node scraper_componenti_wpai_min.js",
+    "scrape:test": "node scraper_componenti_wpai_min.js 5",
+    "scrape:sync": "node scraper_componenti_wpai_min.js 20",
+    "scrape:medium": "node scraper_componenti_wpai_min.js 50",
+    "scrape:enterprise": "node scraper_componenti_enterprise.js 200",
+    "scrape:full": "node scraper_componenti_enterprise.js 999"
+  },
+  "dependencies": {
+    "playwright": "^1.41.0",
+    "csv-writer": "^1.6.0",
+    "express": "^4.18.2",
+    "node-cron": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": "",
+  "license": "ISC"
+}

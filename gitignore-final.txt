@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Output files
+output/
+*.csv
+*.log
+images/
+*.jpg
+*.jpeg
+*.png
+
+# Environment
+.env
+.env.local
+.env.production
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Checkpoint files
+checkpoint.json
+
+# Generated CSV files
+prodotti_*.csv
+scraper_*.log
+
+# Backup folders
+backup*/
+old*/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
