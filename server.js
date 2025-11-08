@@ -32,11 +32,8 @@ function publicBase(req) {
 
 // Helper per scegliere lo scraper giusto
 function getScraperScript(pages) {
-  const pagesNum = parseInt(pages);
-  // Usa enterprise per > 50 pagine o se specificato
-  if (pagesNum > 50 || process.env.USE_ENTERPRISE === 'true') {
-    return 'scraper_componenti_enterprise.js';
-  }
+  // MODIFICATO: Usa sempre scraper standard (selettori più robusti)
+  // Lo scraper enterprise ha problemi con i selettori CSS
   return 'scraper_componenti_wpai_min.js';
 }
 
