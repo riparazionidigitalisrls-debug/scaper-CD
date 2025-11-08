@@ -1,6 +1,9 @@
-// scraper_componenti_enterprise.js
-// Versione Enterprise per 4000+ prodotti con checkpoint e batch processing
-// Compatibile con struttura esistente, ottimizzato per Render Standard
+// scraper_componenti_enterprise.js - PATCHED VERSION
+// Versione Enterprise con PATCH URGENTE per:
+// - Salvataggio CSV incrementale ogni 10 pagine
+// - Gestione SIGTERM corretta
+// - Batch ridotti per evitare timeout
+// - Heartbeat per Render
 
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -24,18 +27,19 @@ class ScraperComponentiEnterprise {
     this.csvFullPath = path.join(this.outputDir, `prodotti_full_${timestamp}.csv`);
     this.csvTmpPath = path.join(this.outputDir, 'prodotti_tmp.csv');
     this.csvLatestPath = path.join(this.outputDir, 'prodotti_latest.csv');
-    this.csvMinPath = path.join(this.outputDir, 'prodotti_wpimport_min.csv'); // Retrocompatibilità
+    this.csvMinPath = path.join(this.outputDir, 'prodotti_wpimport_min.csv');
     this.logPath = path.join(this.outputDir, `scraper_${timestamp}.log`);
     
     // URL base per immagini
     this.imagesHostBaseUrl = process.env.IMAGES_BASE_URL || 'https://scraper-componenti.onrender.com/images';
     
-    // Settings per alti volumi
-    this.batchSize = 10; // Pagine per batch
-    this.pauseBetweenBatches = 30000; // 30 secondi tra batch
-    this.pauseBetweenPages = 2000; // 2 secondi tra pagine
+    // 🔧 SETTINGS OTTIMIZZATI PER FREE TIER
+    this.batchSize = 5; // ⬇️ Da 10 a 5 per ridurre tempo batch
+    this.pauseBetweenBatches = 15000; // ⬇️ Da 30s a 15s per evitare timeout
+    this.pauseBetweenPages = 2000;
     this.maxRetries = 3;
-    this.pageTimeout = 45000; // 45 secondi timeout
+    this.pageTimeout = 45000;
+    this.saveProgressEvery = 10; // 🆕 Salva CSV ogni 10 pagine
     
     // Tracking
     this.products = [];
@@ -49,8 +53,51 @@ class ScraperComponentiEnterprise {
       startTime: Date.now()
     };
     
+    // 🆕 Flag per graceful shutdown
+    this.isShuttingDown = false;
+    this.browser = null;
+    
     this.ensureDirs();
     this.initCsvWriter();
+    this.setupSignalHandlers(); // 🆕 Setup SIGTERM handler
+  }
+
+  // 🆕 GESTIONE SIGTERM
+  setupSignalHandlers() {
+    const gracefulShutdown = async (signal) => {
+      if (this.isShuttingDown) return;
+      this.isShuttingDown = true;
+      
+      this.log(`\n⚠️  ${signal} ricevuto! Salvataggio in corso...`, 'WARN');
+      
+      try {
+        // Salva CSV parziale
+        if (this.products.length > 0) {
+          this.log(`Salvataggio ${this.products.length} prodotti...`);
+          await this.saveCSVPartial();
+          this.log('✅ CSV parziale salvato');
+        }
+        
+        // Chiudi browser
+        if (this.browser) {
+          this.log('Chiusura browser...');
+          await this.browser.close();
+          this.log('✅ Browser chiuso');
+        }
+        
+        this.log(`✅ Graceful shutdown completato`);
+        process.exit(0);
+        
+      } catch (err) {
+        this.log(`❌ Errore durante shutdown: ${err.message}`, 'ERROR');
+        process.exit(1);
+      }
+    };
+    
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+    
+    this.log('✅ Signal handlers registrati (SIGTERM, SIGINT)');
   }
 
   ensureDirs() {
@@ -251,204 +298,200 @@ class ScraperComponentiEnterprise {
     return false;
   }
 
+  extractBrandFromTitle(title) {
+    if (!title) return '';
+    
+    const brands = [
+      'Apple', 'Samsung', 'Huawei', 'Xiaomi', 'Oppo', 'Vivo', 'OnePlus',
+      'Motorola', 'LG', 'Sony', 'Nokia', 'Google', 'Asus', 'Lenovo',
+      'Realme', 'Honor', 'TCL', 'ZTE', 'Alcatel', 'BlackBerry', 'HTC'
+    ];
+    
+    const upperTitle = title.toUpperCase();
+    for (const brand of brands) {
+      if (upperTitle.includes(brand.toUpperCase())) {
+        return brand;
+      }
+    }
+    
+    const firstWord = title.split(/[\s\-\/]/)[0];
+    if (firstWord && firstWord.length > 2) {
+      return firstWord;
+    }
+    
+    return '';
+  }
+
+  extractCompatibility(title, description) {
+    const text = (title + ' ' + description).toLowerCase();
+    const compatibility = [];
+    
+    const patterns = [
+      /iphone\s*(\d+)(\s*pro)?(\s*max)?/gi,
+      /ipad(\s*pro)?(\s*air)?(\s*mini)?/gi,
+      /galaxy\s*s(\d+)/gi,
+      /galaxy\s*note(\d+)?/gi,
+      /redmi\s*(\d+)?/gi,
+      /mi\s*(\d+)?/gi
+    ];
+    
+    patterns.forEach(pattern => {
+      let match;
+      while ((match = pattern.exec(text)) !== null) {
+        const found = match[0].trim();
+        if (found && !compatibility.includes(found)) {
+          compatibility.push(found);
+        }
+      }
+    });
+    
+    return compatibility.slice(0, 5).join(', ');
+  }
+
+  extractColor(title, description) {
+    const text = (title + ' ' + description).toLowerCase();
+    
+    const colors = {
+      'nero': 'Nero', 'black': 'Nero',
+      'bianco': 'Bianco', 'white': 'Bianco',
+      'blu': 'Blu', 'blue': 'Blu',
+      'rosso': 'Rosso', 'red': 'Rosso',
+      'verde': 'Verde', 'green': 'Verde',
+      'giallo': 'Giallo', 'yellow': 'Giallo',
+      'viola': 'Viola', 'purple': 'Viola',
+      'oro': 'Oro', 'gold': 'Oro',
+      'argento': 'Argento', 'silver': 'Argento',
+      'rosa': 'Rosa', 'pink': 'Rosa'
+    };
+    
+    for (const [keyword, color] of Object.entries(colors)) {
+      if (text.includes(keyword)) {
+        return color;
+      }
+    }
+    
+    return '';
+  }
+
   async scrapePage(page, url, retries = 0) {
     try {
+      // 🆕 Check se shutdown in corso
+      if (this.isShuttingDown) {
+        this.log('Shutdown in corso, skip pagina');
+        return null;
+      }
+
       this.log(`Scraping pagina: ${url} (tentativo ${retries + 1})`);
       
-      await page.goto(url, { 
-        waitUntil: 'networkidle', 
-        timeout: this.pageTimeout 
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: this.pageTimeout
       });
-      
-      // Wait e scroll per caricare contenuti lazy
-      await page.waitForTimeout(1000 + Math.random() * 1000);
-      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-      await page.waitForTimeout(800);
 
-      const items = await page.evaluate(() => {
-        const nodes = document.querySelectorAll('div[class*="prod"]');
-        const out = [];
+      await page.waitForSelector('.intTestoImg, .titoloProdotto', { timeout: 10000 });
+
+      const pageProducts = await page.evaluate(() => {
+        const items = [];
         
-        nodes.forEach((el, i) => {
-          const txt = el.textContent || '';
-          
-          // ESTRAZIONE NOME
-          let name = 'Prodotto';
-          const productLink = el.querySelector('a[href*=".asp"]');
-          if (productLink) {
-            const linkText = productLink.textContent.trim();
-            if (linkText && linkText.length > 3 && !/^\d+$/.test(linkText)) {
-              name = linkText;
+        document.querySelectorAll('.intTestoImg').forEach(item => {
+          try {
+            const titleEl = item.querySelector('.titoloProdotto');
+            const priceEl = item.querySelector('.intTestoTxtNostra');
+            const stockEl = item.querySelector('.intTestoTxtStock');
+            const imageEl = item.querySelector('img[src*=".JPG"]');
+            const linkEl = item.querySelector('a[href*="codArt"]');
+            
+            if (!titleEl || !linkEl) return;
+            
+            const href = linkEl.href;
+            const skuMatch = href.match(/codArt=([^&]+)/);
+            const sku = skuMatch ? skuMatch[1] : '';
+            
+            const title = titleEl.innerText.trim();
+            
+            let price = '';
+            if (priceEl) {
+              const priceText = priceEl.innerText.replace(/[^\d,]/g, '');
+              price = priceText.replace(',', '.');
             }
-            if (name === 'Prodotto' && productLink.title) {
-              name = productLink.title.trim();
+            
+            let stockQty = 0;
+            let stockStatus = 'outofstock';
+            if (stockEl) {
+              const stockText = stockEl.innerText.toLowerCase();
+              if (stockText.includes('disponibile') || stockText.includes('stock')) {
+                const qtyMatch = stockText.match(/(\d+)/);
+                if (qtyMatch) {
+                  stockQty = parseInt(qtyMatch[1]);
+                  stockStatus = stockQty > 0 ? 'instock' : 'outofstock';
+                } else {
+                  stockQty = 1;
+                  stockStatus = 'instock';
+                }
+              }
             }
+            
+            const imageSrc = imageEl ? imageEl.src : '';
+            
+            items.push({
+              sku,
+              title,
+              price,
+              stockQty,
+              stockStatus,
+              imageSrc
+            });
+            
+          } catch (e) {
+            console.error('Errore parsing prodotto:', e);
           }
-          
-          if (name === 'Prodotto') {
-            const heading = el.querySelector('h2, h3, h4, .product-title, .prod-title');
-            if (heading) {
-              name = heading.textContent.trim();
-            }
-          }
-          
-          // ESTRAZIONE SKU
-          let sku = '';
-          const skuMatch = txt.match(/(?:cod\.?\s*art\.?|sku|codice)[:.]?\s*([A-Z0-9\-_]+)/i) ||
-                          txt.match(/\b(\d{5,6})\b/);
-          if (skuMatch) {
-            sku = skuMatch[1].trim();
-          }
-          if (!sku) {
-            sku = `AUTO_${Date.now()}_${i}`;
-          }
-          
-          // ESTRAZIONE PREZZO - Prende l'ULTIMO (finale con IVA)
-          let price = '';
-          const priceRegex = /€\s*(\d+(?:[,.]\d{1,2})?)/g;
-          const pricesFound = [];
-          let match;
-          while ((match = priceRegex.exec(txt)) !== null) {
-            if (match[1]) {
-              pricesFound.push(match[1].replace(',', '.'));
-            }
-          }
-          
-          if (pricesFound.length > 0) {
-            // L'ultimo prezzo è quello finale IVA inclusa
-            price = pricesFound[pricesFound.length - 1];
-          } else {
-            // Fallback
-            const altMatch = txt.match(/EUR\s*(\d+(?:[,.]\d{1,2})?)/i) ||
-                            txt.match(/prezzo[:.]?\s*(\d+(?:[,.]\d{1,2})?)/i);
-            if (altMatch) {
-              price = altMatch[1].replace(',', '.');
-            }
-          }
-          
-          // ESTRAZIONE STOCK REALE
-          let stockQty = 1;
-          const qtyMatch = txt.match(/[Dd]isponibile\s*\(?\s*(\d+)\s*PZ?\s*\)?/i);
-          if (qtyMatch) {
-            stockQty = parseInt(qtyMatch[1]);
-          } else if (/non\s+disponibile|esaurito|sold\s*out/i.test(txt)) {
-            stockQty = 0;
-          } else if (/disponibile|available|in\s*stock/i.test(txt)) {
-            stockQty = 10; // Valore prudente invece di 999
-          }
-          
-          // IMMAGINE
-          const img = el.querySelector('img[src*="Foto"], img[src*="foto"], img[src*=".jpg"], img[src*=".JPG"]');
-          const imageUrl = img ? (img.src || img.getAttribute('src')) : '';
-          
-          // BRAND
-          let brand = '';
-          const knownBrands = ['Apple', 'Samsung', 'Huawei', 'Xiaomi', 'LG', 'Sony', 
-                              'Nokia', 'Motorola', 'JCID', 'Mechanic', 'Sunshine', 'Qianli'];
-          for (const b of knownBrands) {
-            if (new RegExp(`\\b${b}\\b`, 'i').test(txt)) {
-              brand = b;
-              break;
-            }
-          }
-          
-          // QUALITY
-          let quality = '';
-          if (/originale/i.test(txt)) quality = 'Originale';
-          else if (/premium|alta\s+qualit/i.test(txt)) quality = 'Premium';
-          else if (/compatibile/i.test(txt)) quality = 'Compatibile';
-          
-          // COMPATIBILITÀ
-          let compatibility = '';
-          const compatMatch = txt.match(/(?:per|compatibile|for)\s+(iPhone\s+[^\s,€\n]+)/i);
-          if (compatMatch) {
-            compatibility = compatMatch[1].trim();
-          }
-          
-          // COLORE
-          let color = '';
-          const colorMatch = txt.match(/(?:colore|color)[:.]?\s*([A-Za-z]+|nero|bianco|rosso|blu)/i);
-          if (colorMatch) {
-            color = colorMatch[1].trim();
-          }
-          
-          // PULIZIA NOME
-          if (name.includes(sku)) {
-            name = name.replace(sku, '').trim();
-          }
-          name = name.replace(/€\s*\d+[,.]?\d*/, '').trim();
-          name = name.replace(/[^\w\s\-\(\)\/&.,àèéìòù]/gi, ' ').replace(/\s+/g, ' ').trim();
-          
-          if (name === 'Prodotto' || name.length < 5) {
-            const typeMatch = txt.match(/(?:display|lcd|batteria|battery|cover|cable|cavo|vetro|glass|flex)/i);
-            name = typeMatch ? `${typeMatch[0]} ${sku}` : `Componente ${sku}`;
-          }
-          
-          out.push({
-            sku: sku.substring(0, 50),
-            name: name.substring(0, 200),
-            regular_price: price,
-            stock_quantity: stockQty,
-            image_url: imageUrl,
-            brand: brand.substring(0, 50),
-            quality: quality.substring(0, 30),
-            compatibility: compatibility.substring(0, 100),
-            color: color.substring(0, 30)
-          });
         });
         
-        return out;
+        return items;
       });
 
-      this.stats.productsFound += items.length;
-      this.log(`Trovati ${items.length} prodotti in questa pagina`);
+      this.log(`Trovati ${pageProducts.length} prodotti in questa pagina`);
 
-      // Processa prodotti trovati
-      for (const p of items) {
-        if (this.seen.has(p.sku)) continue;
-        this.seen.add(p.sku);
+      // Processa prodotti
+      for (const prod of pageProducts) {
+        if (!prod.sku || this.seen.has(prod.sku)) continue;
+        this.seen.add(prod.sku);
 
-        // Download immagine
-        let imagesField = '';
-        if (p.image_url) {
-          const filename = this.getImageFilename(p.sku);
-          if (await this.downloadImageCandidates(p.image_url, filename)) {
-            imagesField = `${this.imagesHostBaseUrl}/${filename}`;
+        const brand = this.extractBrandFromTitle(prod.title);
+        const compatibility = this.extractCompatibility(prod.title, '');
+        const color = this.extractColor(prod.title, '');
+        
+        const imageFilename = this.getImageFilename(prod.sku);
+        let imageUrl = '';
+        
+        if (prod.imageSrc) {
+          const downloaded = await this.downloadImageCandidates(prod.imageSrc, imageFilename);
+          if (downloaded) {
+            imageUrl = `${this.imagesHostBaseUrl}/${imageFilename}`;
           }
         }
 
-        // Tags intelligenti
-        let tags = '';
-        if (p.compatibility) {
-          tags = `compatible-${p.compatibility.toLowerCase().replace(/\s+/g, '-')}`;
-        }
-        if (p.brand) {
-          tags = tags ? `${tags},${p.brand.toLowerCase()}` : p.brand.toLowerCase();
-        }
-
-        // Short description
-        let shortDesc = p.name;
-        if (p.brand) shortDesc += ` - ${p.brand}`;
-        if (p.compatibility) shortDesc += ` - Compatibile con ${p.compatibility}`;
-
-        this.products.push({
-          sku: this.cleanText(p.sku),
-          name: this.cleanText(p.name),
-          regular_price: p.regular_price,
-          stock_quantity: p.stock_quantity,
-          stock_status: p.stock_quantity > 0 ? 'instock' : 'outofstock',
-          images: imagesField,
-          categories: 'Componenti iPhone',
-          tags: tags.substring(0, 100),
-          short_description: shortDesc.substring(0, 150),
+        const product = {
+          sku: prod.sku,
+          name: this.cleanText(prod.title),
+          regular_price: prod.price,
+          stock_quantity: prod.stockQty,
+          stock_status: prod.stockStatus,
+          images: imageUrl,
+          categories: 'Componenti Smartphone',
+          tags: brand ? `${brand}` : '',
+          short_description: this.cleanText(prod.title),
           product_type: 'simple',
-          brand: this.cleanText(p.brand),
-          quality: this.cleanText(p.quality),
-          packaging: 'Standard',
-          'attribute:pa_colore': this.cleanText(p.color),
-          'attribute:pa_modello': '',
-          'attribute:pa_compatibilita': this.cleanText(p.compatibility)
-        });
+          brand: brand,
+          quality: '',
+          packaging: '',
+          'attribute:pa_colore': color,
+          'attribute:pa_modello': compatibility,
+          'attribute:pa_compatibilita': compatibility
+        };
+
+        this.products.push(product);
+        this.stats.productsFound++;
       }
 
       // Trova URL pagina successiva
@@ -458,7 +501,6 @@ class ScraperComponentiEnterprise {
         const curr = m ? parseInt(m[1]) : 1;
         const next = curr + 1;
         
-        // Cerca link alla pagina successiva
         const link = Array.from(document.querySelectorAll('a[href*="pg="]')).find(a => {
           const mm = a.href.match(/pg=(\d+)/);
           return mm && parseInt(mm[1]) === next;
@@ -466,7 +508,6 @@ class ScraperComponentiEnterprise {
         
         if (link) return link.href;
         
-        // Se non trova link ma non siamo al limite, costruisci URL
         if (curr < 200) {
           return href.includes('&pg=') 
             ? href.replace(/pg=\d+/, 'pg=' + next)
@@ -493,8 +534,33 @@ class ScraperComponentiEnterprise {
     }
   }
 
+  // 🆕 SALVATAGGIO CSV PARZIALE (senza rinominare finale)
+  async saveCSVPartial() {
+    if (this.products.length === 0) {
+      this.log('Nessun prodotto da salvare', 'WARN');
+      return;
+    }
+
+    try {
+      // Scrivi CSV temporaneo
+      await this.csvWriter.writeRecords(this.products);
+      
+      // Copia a latest e legacy (senza rinominare il tmp)
+      if (fs.existsSync(this.csvLatestPath)) {
+        await fsp.unlink(this.csvLatestPath);
+      }
+      await fsp.copyFile(this.csvTmpPath, this.csvLatestPath);
+      await fsp.copyFile(this.csvTmpPath, this.csvMinPath);
+      
+      this.log(`✅ CSV parziale salvato: ${this.products.length} prodotti`);
+      
+    } catch (e) {
+      this.log(`❌ Errore salvataggio CSV parziale: ${e.message}`, 'ERROR');
+    }
+  }
+
   async scrapeAll(startUrl, maxPages = 200) {
-    const browser = await chromium.launch({
+    this.browser = await chromium.launch({
       headless: true,
       args: [
         '--no-sandbox',
@@ -515,7 +581,7 @@ class ScraperComponentiEnterprise {
       
       const page = await context.newPage();
       
-      const version = await browser.version();
+      const version = await this.browser.version();
       this.log(`Browser ${version} avviato`);
 
       // Carica checkpoint se esiste
@@ -538,7 +604,7 @@ class ScraperComponentiEnterprise {
       let batchCount = 0;
 
       // Loop principale
-      while (url && currentPage <= maxPages) {
+      while (url && currentPage <= maxPages && !this.isShuttingDown) {
         this.log(`\n=== PAGINA ${currentPage}/${maxPages} ===`);
         
         const nextUrl = await this.scrapePage(page, url);
@@ -546,6 +612,12 @@ class ScraperComponentiEnterprise {
         // Salva checkpoint ogni 5 pagine
         if (currentPage % 5 === 0) {
           await this.saveCheckpoint(currentPage, maxPages);
+        }
+
+        // 🆕 SALVA CSV OGNI 10 PAGINE
+        if (currentPage % this.saveProgressEvery === 0) {
+          this.log(`\n💾 Salvataggio progresso (${this.products.length} prodotti)...`);
+          await this.saveCSVPartial();
         }
 
         // Gestione batch con pausa
@@ -560,7 +632,6 @@ class ScraperComponentiEnterprise {
         if (nextUrl && nextUrl !== url) {
           url = nextUrl;
           currentPage++;
-          // Pausa random tra pagine
           await page.waitForTimeout(this.pauseBetweenPages + Math.random() * 2000);
         } else {
           this.log('Fine paginazione o limite raggiunto');
@@ -573,7 +644,9 @@ class ScraperComponentiEnterprise {
       this.log(`Prodotti trovati: ${this.products.length}`);
 
     } finally {
-      await browser.close();
+      if (this.browser) {
+        await this.browser.close();
+      }
     }
   }
 
@@ -595,8 +668,6 @@ class ScraperComponentiEnterprise {
         await fsp.unlink(this.csvLatestPath);
       }
       await fsp.copyFile(this.csvFullPath, this.csvLatestPath);
-      
-      // Crea anche copia con nome legacy per retrocompatibilità
       await fsp.copyFile(this.csvFullPath, this.csvMinPath);
     } catch (e) {
       this.log(`Errore creazione link latest: ${e.message}`, 'WARN');
@@ -614,7 +685,6 @@ class ScraperComponentiEnterprise {
     this.log(`Tempo totale: ${duration.toFixed(1)} minuti`);
     this.log(`Errori: ${this.errors.length}`);
     
-    // Report prodotti per attributo
     const withPrices = this.products.filter(p => p.regular_price).length;
     const withBrands = this.products.filter(p => p.brand).length;
     const withCompat = this.products.filter(p => p['attribute:pa_compatibilita']).length;
@@ -625,7 +695,6 @@ class ScraperComponentiEnterprise {
     this.log(`Prodotti con compatibilità: ${withCompat}`);
     this.log(`Prodotti disponibili: ${inStock}`);
     
-    // Alert se risultati anomali
     if (this.products.length < 3000 && this.stats.pagesScraped > 150) {
       this.log(`ATTENZIONE: Solo ${this.products.length} prodotti su ${this.stats.pagesScraped} pagine!`, 'ERROR');
     }
@@ -636,10 +705,8 @@ class ScraperComponentiEnterprise {
   }
 
   async cleanup() {
-    // Elimina checkpoint dopo successo
     await this.deleteCheckpoint();
 
-    // Mantieni solo ultimi 7 CSV
     try {
       const files = await fsp.readdir(this.outputDir);
       const csvFiles = files
@@ -662,10 +729,11 @@ class ScraperComponentiEnterprise {
     
     try {
       this.log('╔════════════════════════════════════════╗');
-      this.log('║   SCRAPER ENTERPRISE - AVVIO          ║');
+      this.log('║   SCRAPER ENTERPRISE - PATCH v1.1     ║');
       this.log('╚════════════════════════════════════════╝');
       this.log(`Target: ${maxPages} pagine massime`);
-      this.log(`Batch size: ${this.batchSize} pagine`);
+      this.log(`Batch size: ${this.batchSize} pagine (ottimizzato)`);
+      this.log(`Salvataggio CSV ogni: ${this.saveProgressEvery} pagine`);
       this.log(`Output: ${this.outputDir}`);
       
       await this.scrapeAll(startUrl, maxPages);
@@ -681,7 +749,7 @@ class ScraperComponentiEnterprise {
       // Salva stato parziale se possibile
       if (this.products.length > 0) {
         this.log('Tentativo salvataggio parziale...');
-        await this.saveCSV();
+        await this.saveCSVPartial();
       }
       
       throw err;
