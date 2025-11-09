@@ -24,8 +24,8 @@ class StockCheckerLight {
     
     // CONFIGURAZIONE ULTRA-RAPIDA (rispetta robots.txt)
     this.config = {
-      crawlDelay: 200,           // 0,2 secondi tra richieste (più dei 10 richiesti)
-      batchSize: 200,               // 200 prodotti per batch
+      crawlDelay: 300,           // 0,3 secondi tra richieste (più dei 10 richiesti)
+      batchSize: 150,               // 150 prodotti per batch
       pauseBetweenBatches: 5000, // o,5 minuti tra batch
       maxProductsPerSession: 5000, // Max prodotti per sessione (20min )
       sessionTimeout: 1800000,    // 8 ore max per sessione
@@ -224,7 +224,7 @@ class StockCheckerLight {
       });
       
       // Aspetta un po' per il caricamento
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(400);
       
       // Estrai info disponibilità
       const stockInfo = await page.evaluate((targetSku) => {
@@ -391,7 +391,7 @@ class StockCheckerLight {
         
         // Delay tra prodotti solo se non siamo all'ultimo
         if (this.currentIndex < this.products.length && this.stats.checked < productsToCheck) {
-          const delay = this.config.crawlDelay + Math.random() * 2000;
+          const delay = this.config.crawlDelay + Math.random() * 200;
           await new Promise(resolve => setTimeout(resolve, delay));
         }
         
