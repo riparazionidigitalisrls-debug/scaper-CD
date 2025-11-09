@@ -1,6 +1,6 @@
 // stock-checker-light.js
 // Sistema separato e sicuro per controllo stock/disponibilità
-// Rispetta crawl-delay di 10 secondi come da robots.txt
+// Rispetta crawl-delay di 0,2 secondI
 // VERSIONE CORRETTA CON LOOP FUNZIONANTE
 
 const { chromium } = require('playwright');
@@ -22,7 +22,7 @@ class StockCheckerLight {
     // URL base
     this.baseUrl = 'https://www.componentidigitali.com';
     
-    // CONFIGURAZIONE ULTRA-CONSERVATIVA (rispetta robots.txt)
+    // CONFIGURAZIONE ULTRA-RAPIDA (rispetta robots.txt)
     this.config = {
       crawlDelay: 200,           // 0,2 secondi tra richieste (più dei 10 richiesti)
       batchSize: 200,               // 200 prodotti per batch
