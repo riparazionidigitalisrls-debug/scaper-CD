@@ -1,4 +1,5 @@
-// server.js - Server per Render.com con supporto Enterprise e Stock Checker
+// server.js - VERSIONE CORRETTA CON TUTTI I FIX
+// Server per Render.com con supporto Enterprise e Stock Checker
 // Dashboard e automazione per scraper standard, enterprise e stock checker
 
 const express = require('express');
@@ -19,6 +20,30 @@ const csvLatestPath = path.join(outputDir, 'prodotti_latest.csv');
 const csvMinPath = path.join(outputDir, 'prodotti_wpimport_min.csv');
 const logPath = path.join(outputDir, 'scraper.log');
 
+// 🔧 FIX: Path assoluti per gli script
+const SCRIPT_PATHS = {
+  scraperMin: path.join(__dirname, 'scraper_componenti_wpai_min.js'),
+  scraperEnterprise: path.join(__dirname, 'scraper_componenti_enterprise.js'),
+  stockChecker: path.join(__dirname, 'stock-checker-light.js')
+};
+
+// Verifica esistenza script all'avvio
+function verifyScripts() {
+  const missing = [];
+  for (const [name, scriptPath] of Object.entries(SCRIPT_PATHS)) {
+    if (!fs.existsSync(scriptPath)) {
+      missing.push(`${name}: ${scriptPath}`);
+    }
+  }
+  if (missing.length > 0) {
+    console.error('⚠️ SCRIPT MANCANTI:', missing);
+    console.error('Assicurati che tutti i file siano presenti!');
+  } else {
+    console.log('✅ Tutti gli script trovati');
+  }
+  return missing.length === 0;
+}
+
 // Serve immagini statiche
 app.use('/images', express.static(path.join(outputDir, 'images')));
 app.use('/output', express.static(outputDir));
@@ -32,8 +57,12 @@ function publicBase(req) {
 
 // Helper per scegliere lo scraper giusto
 function getScraperScript(pages) {
-  // Usa sempre scraper standard (selettori più robusti)
-  return 'scraper_componenti_wpai_min.js';
+  // Usa enterprise per grandi volumi (checkpoint support)
+  if (pages > 100) {
+    return SCRIPT_PATHS.scraperEnterprise;
+  }
+  // Usa standard per volumi normali
+  return SCRIPT_PATHS.scraperMin;
 }
 
 // Helper per check esistenza file
@@ -43,10 +72,31 @@ function getLatestCsvPath() {
   return null;
 }
 
+// Helper per spawn sicuro con logging
+function spawnScript(scriptPath, args = [], label = 'Script') {
+  console.log(`[SPAWN] Avvio ${label}: ${scriptPath} ${args.join(' ')}`);
+  
+  if (!fs.existsSync(scriptPath)) {
+    console.error(`[SPAWN] ERRORE: Script non trovato: ${scriptPath}`);
+    return null;
+  }
+  
+  const child = spawn('node', [scriptPath, ...args], {
+    detached: true,
+    stdio: 'ignore',
+    cwd: __dirname  // 🔧 FIX: Working directory esplicita
+  });
+  
+  child.unref();
+  console.log(`[SPAWN] ${label} avviato con PID: ${child.pid}`);
+  return child;
+}
+
 // Dashboard principale migliorata
 app.get('/', (req, res) => {
   const stats = getStats();
   const base = publicBase(req);
+  const scriptsOk = verifyScripts();
   
   res.send(`
     <!DOCTYPE html>
@@ -89,6 +139,10 @@ app.get('/', (req, res) => {
           transition: background 0.3s;
         }
         button:hover { background: #5a67d8; }
+        button:disabled { 
+          background: #ccc; 
+          cursor: not-allowed; 
+        }
         button.enterprise { background: #f59e0b; }
         button.enterprise:hover { background: #d97706; }
         button.stock { background: #10b981; }
@@ -142,11 +196,22 @@ app.get('/', (req, res) => {
           margin: 15px 0;
           border-radius: 5px;
         }
+        .alert.error {
+          background: #fed7d7;
+          border-left-color: #dc2626;
+        }
       </style>
     </head>
     <body>
       <div class="container">
         <h1>🚀 Scraper Componenti Digitali - Dashboard</h1>
+        
+        ${!scriptsOk ? `
+        <div class="alert error">
+          <strong>⚠️ ATTENZIONE:</strong> Alcuni script non sono stati trovati. 
+          Verifica che tutti i file siano presenti nel container.
+        </div>
+        ` : ''}
         
         <div class="grid">
           <div class="card">
@@ -183,18 +248,24 @@ app.get('/', (req, res) => {
           <h2>⚡ Controlli Manuali</h2>
           
           <div style="margin: 15px 0;">
-            <strong>🟢 Stock Check (SOLO disponibilità - veloce 20 min):</strong><br>
-            <button class="stock" onclick="runStockCheck(100)">Test 100 prodotti</button>
-            <button class="stock" onclick="runStockCheck(500)">Check 500 prodotti</button>
-            <button class="stock" onclick="runStockCheck(5000)">Check COMPLETO (5000)</button>
+            <strong>🟢 Stock Check ULTRA-VELOCE (solo disponibilità - 200ms/prodotto):</strong><br>
+            <button class="stock" onclick="runStockCheck(100)" ${!scriptsOk ? 'disabled' : ''}>
+              Test 100 prodotti (~30 sec)
+            </button>
+            <button class="stock" onclick="runStockCheck(500)" ${!scriptsOk ? 'disabled' : ''}>
+              Check 500 prodotti (~2 min)
+            </button>
+            <button class="stock" onclick="runStockCheck(5000)" ${!scriptsOk ? 'disabled' : ''}>
+              Check COMPLETO 5000 (~20 min)
+            </button>
           </div>
           
           <div style="margin: 15px 0;">
             <strong>Standard Mode (scraping completo ~25 min):</strong><br>
-            <button onclick="runScrape(5)">🧪 Test (5 pagine)</button>
-            <button onclick="runScrape(20)">🔄 Sync (20 pagine)</button>
-            <button onclick="runScrape(50)">📈 Medio (50 pagine)</button>
-            <button onclick="runScrape(200)">📦 Full (200 pagine)</button>
+            <button onclick="runScrape(5)" ${!scriptsOk ? 'disabled' : ''}>🧪 Test (5 pagine)</button>
+            <button onclick="runScrape(20)" ${!scriptsOk ? 'disabled' : ''}>🔄 Sync (20 pagine)</button>
+            <button onclick="runScrape(50)" ${!scriptsOk ? 'disabled' : ''}>📈 Medio (50 pagine)</button>
+            <button onclick="runScrape(200)" ${!scriptsOk ? 'disabled' : ''}>📦 Full (200 pagine)</button>
           </div>
           
           <div style="margin: 15px 0;">
@@ -204,10 +275,11 @@ app.get('/', (req, res) => {
           </div>
           
           <div class="alert">
-            <strong>✅ SISTEMA ANTI-OVERSELLING OTTIMIZZATO:</strong><br>
+            <strong>✅ SISTEMA ANTI-OVERSELLING ULTRA-VELOCE:</strong><br>
             • <strong>Full scan:</strong> ogni notte alle 3:00 (~25 min)<br>
-            • <strong>Stock check GIORNO:</strong> ogni 2 ore (8:00-22:00) - 20 min<br>
-            • <strong>Stock check NOTTE:</strong> ogni 4 ore (0:00, 4:00) - 20 min<br>
+            • <strong>Stock check VELOCE:</strong> ogni 2 ore (8:00-22:00) - ~20 min per 5000 prodotti<br>
+            • <strong>Stock check NOTTE:</strong> ogni 4 ore (0:00, 4:00) - ~20 min<br>
+            • <strong>Performance:</strong> 200ms/prodotto = 300 prodotti/minuto<br>
             • <strong>Finestra max overselling: 2 ORE</strong> ✅<br>
             • <strong>Verifiche stock: 12x/giorno (60.000+ check)</strong><br>
             • <strong>Zero accavallamenti cron</strong> ✅
@@ -215,225 +287,173 @@ app.get('/', (req, res) => {
           
           <div class="info">
             <strong>ℹ️ Scheduling Automatico:</strong><br>
-            • Stock check veloce: ogni 2h giorno, 4h notte (20 min/check)<br>
-            • Full scraping: ogni notte alle 3:00 UTC (25 min)<br>
-            • Sistema bilanciato e sicuro ✅<br>
+            • Stock check veloce: ogni 2h giorno, 4h notte (~20 min/check)<br>
+            • Full scraping: ogni notte alle 3:00 UTC (~25 min)<br>
+            • Sistema ottimizzato per massima velocità ⚡<br>
             • Server: Render.com ${process.env.RENDER ? '<span class="status ok">Production</span>' : '<span class="status warn">Development</span>'}<br>
             • Storage: Persistent Disk /data ✅<br>
-            • Base URL: <code>${base}</code><br>
-            • CSV Endpoint: <code>${base}/output/prodotti_latest.csv</code>
+            • Scripts: ${scriptsOk ? '<span class="status ok">Tutti presenti</span>' : '<span class="status error">Alcuni mancanti</span>'}
           </div>
-          
-          ${stats.checkpoint ? `
-          <div class="info" style="background: #fef5e7; border-color: #f39c12;">
-            <strong>⏸️ Checkpoint Attivo:</strong><br>
-            • Pagina: ${stats.checkpoint.currentPage}/${stats.checkpoint.totalPages}<br>
-            • Prodotti salvati: ${stats.checkpoint.productsScraped}<br>
-            • Creato: ${new Date(stats.checkpoint.timestamp).toLocaleString('it-IT')}<br>
-            <div class="progress">
-              <div class="progress-bar" style="width: ${(stats.checkpoint.currentPage / stats.checkpoint.totalPages * 100).toFixed(1)}%"></div>
-            </div>
-          </div>
-          ` : ''}
-          
-          ${stats.stockProgress ? `
-          <div class="info" style="background: #d1fae5; border-color: #10b981;">
-            <strong>📊 Stock Check in Progress:</strong><br>
-            • Prodotti controllati: ${stats.stockProgress.currentIndex || 0}/${stats.stockProgress.stats?.checked || 'N/A'}<br>
-            • Aggiornati: ${stats.stockProgress.stats?.updated || 0}<br>
-            • Out of stock: ${stats.stockProgress.stats?.outOfStock?.length || 0}<br>
-            • Ultimo check: ${new Date(stats.stockProgress.timestamp).toLocaleString('it-IT')}<br>
-          </div>
-          ` : ''}
         </div>
         
         <div class="card" style="margin-top: 20px;">
-          <h2>📝 Log Recenti</h2>
-          <div class="logs" id="logs">${stats.logs}</div>
-        </div>
-        
-        <div class="card" style="margin-top: 20px;">
-          <h2>📈 Statistiche Sistema</h2>
-          <div class="info">
-            • Uptime: ${stats.uptime}<br>
-            • Memoria: ${stats.memory.used}/${stats.memory.total} MB (${stats.memory.percent}%)<br>
-            • CPU Load: ${stats.cpu}<br>
-            • Disk Space: ${stats.disk.used}/${stats.disk.total} GB
-          </div>
+          <h2>📋 Ultimi Log</h2>
+          <div class="logs">${stats.logs || 'Nessun log disponibile'}</div>
         </div>
       </div>
       
       <script>
         async function runScrape(pages) {
-          const mode = pages > 50 ? 'Full' : 'Quick';
-          if (!confirm(\`Avviare scraping di \${pages} pagine?\\nDurata stimata: ~\${Math.ceil(pages * 0.125)} minuti\`)) return;
-          
-          const btn = event.target;
-          btn.disabled = true;
-          btn.textContent = '⏳ Avvio...';
-          
-          try {
-            const res = await fetch(\`/api/scrape?pages=\${pages}\`, { method: 'POST' });
+          if(confirm(\`Avviare scraping di \${pages} pagine?\`)) {
+            const res = await fetch('/api/scrape', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ pages })
+            });
             const data = await res.json();
-            
-            if (data.status === 'started') {
-              alert(\`✅ Scraping avviato!\\nModalità: \${mode}\\nPagine: \${pages}\\nPID: \${data.pid}\`);
-              setTimeout(() => location.reload(), 3000);
-            } else {
-              alert('❌ Errore: ' + (data.error || 'Sconosciuto'));
-            }
-          } catch (e) {
-            alert('❌ Errore di connessione');
-          } finally {
-            btn.disabled = false;
-            btn.textContent = btn.textContent.replace('⏳ Avvio...', '');
+            alert(data.message || 'Scraping avviato');
+            setTimeout(() => location.reload(), 2000);
           }
         }
         
         async function runStockCheck(products) {
-          const duration = Math.ceil(products * 0.24 / 60);
-          if (!confirm(\`Avviare stock check di \${products} prodotti?\\nTempo stimato: ~\${duration} minuti\`)) return;
-          
-          const btn = event.target;
-          btn.disabled = true;
-          btn.textContent = '⏳ Avvio...';
-          
-          try {
-            const res = await fetch(\`/api/stock-check?products=\${products}\`, { method: 'POST' });
+          const time = Math.ceil(products * 0.25 / 60);
+          if(confirm(\`Check stock di \${products} prodotti (~\${time} minuti)?\`)) {
+            const res = await fetch('/api/stock-check', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ products })
+            });
             const data = await res.json();
-            
-            if (data.status === 'started') {
-              alert(\`✅ Stock check avviato!\\nProdotti: \${products}\\nPID: \${data.pid}\\nDurata: ~\${duration} min\`);
-              setTimeout(() => location.reload(), 3000);
-            } else {
-              alert('❌ Errore: ' + (data.error || 'Sconosciuto'));
-            }
-          } catch (e) {
-            alert('❌ Errore di connessione');
-          } finally {
-            btn.disabled = false;
-            btn.textContent = btn.textContent.replace('⏳ Avvio...', '');
+            alert(data.message || 'Stock check avviato');
+            setTimeout(() => location.reload(), 2000);
           }
         }
         
-        function downloadCSV() { 
-          window.location.href = '/download/csv'; 
+        async function downloadCSV() {
+          window.open('/api/csv/latest', '_blank');
         }
         
         async function viewCheckpoint() {
           const res = await fetch('/api/checkpoint');
           const data = await res.json();
-          if (data.exists) {
-            alert(JSON.stringify(data.checkpoint, null, 2));
+          if(data.exists) {
+            alert('Checkpoint:\\n' + JSON.stringify(data.checkpoint, null, 2));
           } else {
-            alert('Nessun checkpoint attivo');
+            alert('Nessun checkpoint trovato');
           }
         }
         
         async function clearLogs() {
-          if (confirm('Eliminare tutti i log?')) {
-            await fetch('/api/logs', { method: 'DELETE' });
+          if(confirm('Eliminare tutti i log?')) {
+            await fetch('/api/logs', {method: 'DELETE'});
             location.reload();
           }
         }
         
-        // Auto-refresh logs
-        setInterval(async () => {
-          try { 
-            const res = await fetch('/api/logs');
-            const logs = await res.text();
-            document.getElementById('logs').textContent = logs;
-          } catch (e) {}
-        }, 5000);
-        
-        // Auto-refresh page ogni minuto
-        setTimeout(() => location.reload(), 60000);
+        // Auto-refresh ogni 30 secondi
+        setTimeout(() => location.reload(), 30000);
       </script>
     </body>
     </html>
   `);
 });
 
-// API: Avvia scraping
-app.post('/api/scrape', (req, res) => {
-  const pages = req.query.pages || '20';
+// API: Run scraper
+app.post('/api/scrape', express.json(), (req, res) => {
+  const pages = parseInt(req.body.pages) || 20;
   const script = getScraperScript(pages);
+  const scriptName = path.basename(script);
   
-  console.log(`[API] Avvio scraping: ${pages} pagine con ${script}`);
+  console.log(`[API] Richiesta scraping: ${pages} pagine usando ${scriptName}`);
   
-  const scraper = spawn('node', [script, pages], {
-    detached: true,
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
+  const child = spawnScript(script, [pages.toString()], `Scraper (${pages} pagine)`);
   
-  scraper.stdout.on('data', (data) => console.log(`[SCRAPER]: ${data}`));
-  scraper.stderr.on('data', (data) => console.error(`[SCRAPER ERROR]: ${data}`));
-  scraper.unref();
-  
-  res.json({ 
-    status: 'started', 
-    pages, 
-    pid: scraper.pid,
-    script,
-    mode: pages > 50 ? 'full' : 'quick'
-  });
-});
-
-// API: Avvia stock check
-app.post('/api/stock-check', (req, res) => {
-  const products = req.query.products || '5000';
-  
-  console.log(`[API] Avvio stock check: ${products} prodotti`);
-  
-  const checker = spawn('node', ['stock-checker-light.js', products], {
-    detached: true,
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-  
-  checker.stdout.on('data', (data) => console.log(`[STOCK-CHECK]: ${data}`));
-  checker.stderr.on('data', (data) => console.error(`[STOCK-CHECK ERROR]: ${data}`));
-  checker.unref();
-  
-  res.json({ 
-    status: 'started', 
-    products, 
-    pid: checker.pid,
-    estimatedTime: `~${Math.ceil(products * 0.24 / 60)} minuti`
-  });
-});
-
-// API: Download CSV
-app.get('/download/csv', (req, res) => {
-  const csvPath = getLatestCsvPath();
-  
-  if (csvPath && fs.existsSync(csvPath)) {
-    const filename = path.basename(csvPath);
-    res.download(csvPath, filename);
+  if (child) {
+    res.json({ 
+      status: 'started', 
+      pages, 
+      script: scriptName,
+      message: `Scraping di ${pages} pagine avviato` 
+    });
   } else {
-    res.status(404).send('CSV non ancora disponibile. Avvia prima lo scraping.');
+    res.status(500).json({ 
+      status: 'error', 
+      message: 'Script non trovato o errore di avvio' 
+    });
   }
 });
 
+// API: Stock check
+app.post('/api/stock-check', express.json(), (req, res) => {
+  const products = parseInt(req.body.products) || 100;
+  
+  console.log(`[API] Richiesta stock check: ${products} prodotti`);
+  
+  const child = spawnScript(SCRIPT_PATHS.stockChecker, [products.toString()], `Stock Check (${products} prodotti)`);
+  
+  if (child) {
+    const estimatedTime = Math.ceil(products * 0.25 / 60);
+    res.json({ 
+      status: 'started', 
+      products,
+      estimatedMinutes: estimatedTime,
+      message: `Stock check di ${products} prodotti avviato (~${estimatedTime} min)` 
+    });
+  } else {
+    res.status(500).json({ 
+      status: 'error', 
+      message: 'Script stock-checker non trovato' 
+    });
+  }
+});
+
+// API: Download CSV
+app.get('/api/csv/:type', (req, res) => {
+  const csvPath = getLatestCsvPath();
+  
+  if (!csvPath || !fs.existsSync(csvPath)) {
+    return res.status(404).json({ error: 'CSV non trovato' });
+  }
+  
+  res.download(csvPath, 'prodotti_componenti_digitali.csv');
+});
+
 // API: Get logs
-app.get('/api/logs', (req, res) => {
+app.get('/api/logs/:type?', (req, res) => {
+  const type = req.params.type || 'scraper';
   const logFiles = [];
   
   if (fs.existsSync(outputDir)) {
     const files = fs.readdirSync(outputDir);
     files.forEach(file => {
-      if (file.endsWith('.log')) {
-        logFiles.push(path.join(outputDir, file));
+      if (file.endsWith('.log') && file.includes(type)) {
+        logFiles.push({
+          name: file,
+          path: path.join(outputDir, file),
+          size: fs.statSync(path.join(outputDir, file)).size
+        });
       }
     });
   }
   
   if (logFiles.length > 0) {
-    const latestLog = logFiles.sort().pop();
-    const logs = fs.readFileSync(latestLog, 'utf8');
-    const lines = logs.split('\n');
-    res.send(lines.slice(-100).join('\n'));
+    // Ordina per data modifica (più recente prima)
+    logFiles.sort((a, b) => {
+      return fs.statSync(b.path).mtime - fs.statSync(a.path).mtime;
+    });
+    
+    const latestLog = logFiles[0];
+    const content = fs.readFileSync(latestLog.path, 'utf8');
+    const lines = content.split('\n');
+    
+    res.json({
+      file: latestLog.name,
+      lines: lines.slice(-100),
+      totalLines: lines.length
+    });
   } else {
-    res.send('Nessun log disponibile');
+    res.json({ lines: [], totalLines: 0 });
   }
 });
 
@@ -447,7 +467,7 @@ app.delete('/api/logs', (req, res) => {
       }
     });
   }
-  res.json({ status: 'ok' });
+  res.json({ status: 'ok', message: 'Log eliminati' });
 });
 
 // API: Checkpoint status
@@ -466,12 +486,14 @@ app.get('/api/checkpoint', (req, res) => {
 app.get('/healthz', (req, res) => res.status(200).send('ok'));
 app.get('/health', (req, res) => {
   const stats = getStats();
+  const scriptsOk = verifyScripts();
   res.json({ 
-    status: 'healthy', 
+    status: scriptsOk ? 'healthy' : 'degraded', 
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
     products: stats.totalProducts,
-    lastUpdate: stats.lastUpdate
+    lastUpdate: stats.lastUpdate,
+    scriptsAvailable: scriptsOk
   });
 });
 
@@ -598,35 +620,27 @@ if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
   // ✅ Full scan notturno alle 3:00 UTC (4:00 Italia)
   cron.schedule('0 3 * * *', () => {
     console.log('[CRON] Full scan notturno (200 pagine) - Prodotti + Prezzi + Immagini');
-    spawn('node', ['scraper_componenti_wpai_min.js', '200'], {
-      detached: true,
-      stdio: 'ignore'
-    }).unref();
+    spawnScript(SCRIPT_PATHS.scraperMin, ['200'], 'Full Scan Notturno');
   });
   
   // ✅ Stock check ogni 2 ore durante il giorno (8:00-22:00 UTC)
   cron.schedule('0 8,10,12,14,16,18,20,22 * * *', () => {
     console.log('[CRON] Stock check diurno (ogni 2h) - Anti-overselling veloce');
-    spawn('node', ['stock-checker-light.js', '5000'], {
-      detached: true,
-      stdio: 'ignore'
-    }).unref();
+    spawnScript(SCRIPT_PATHS.stockChecker, ['5000'], 'Stock Check Diurno');
   });
   
   // ✅ Stock check notturno ridotto (0:00 e 4:00 UTC)
   cron.schedule('0 0,4 * * *', () => {
     console.log('[CRON] Stock check notturno (ogni 4h)');
-    spawn('node', ['stock-checker-light.js', '5000'], {
-      detached: true,
-      stdio: 'ignore'
-    }).unref();
+    spawnScript(SCRIPT_PATHS.stockChecker, ['5000'], 'Stock Check Notturno');
   });
   
-  console.log('⏰ Cron jobs ANTI-OVERSELLING OTTIMIZZATI attivati:');
+  console.log('⏰ Cron jobs ANTI-OVERSELLING ULTRA-VELOCI attivati:');
   console.log('   - Full scan: ogni notte alle 3:00 UTC (~25 min)');
-  console.log('   - Stock check diurno: ogni 2 ore 8:00-22:00 UTC (~20 min)');
+  console.log('   - Stock check diurno: ogni 2 ore 8:00-22:00 UTC (~20 min per 5000 prodotti)');
   console.log('   - Stock check notturno: ogni 4 ore 0:00,4:00 UTC (~20 min)');
-  console.log('   - Totale verifiche stock: 12x/giorno');
+  console.log('   - Performance: 200ms/prodotto = 300 prodotti/minuto');
+  console.log('   - Totale verifiche stock: 12x/giorno (60.000+ check)');
   console.log('   - Finestra max overselling: 2 ORE');
   console.log('   - ZERO accavallamenti cron ✅');
   
@@ -650,10 +664,18 @@ app.listen(PORT, () => {
   console.log(`Render: ${process.env.RENDER ? 'Yes' : 'No'}`);
   console.log(`Storage: ${outputBase}`);
   
+  // Verifica script all'avvio
+  const allScriptsOk = verifyScripts();
+  if (!allScriptsOk) {
+    console.error('\n⚠️ ATTENZIONE: Alcuni script mancano!');
+    console.error('Il sistema funzionerà in modo degradato.');
+  }
+  
   if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
-    console.log('\n⚡ SISTEMA ANTI-OVERSELLING OTTIMIZZATO:');
+    console.log('\n⚡ SISTEMA ANTI-OVERSELLING ULTRA-VELOCE:');
     console.log('• Full scan: ogni notte ore 3:00 UTC (~25 min)');
-    console.log('• Stock check: ogni 2h giorno + 4h notte (~20 min)');
+    console.log('• Stock check: ogni 2h giorno + 4h notte (~20 min per 5000 prodotti)');
+    console.log('• Performance: 200ms/prodotto = 300 prodotti/minuto');
     console.log('• Verifiche totali: 12x/giorno (60.000+ check)');
     console.log('• Finestra overselling: MAX 2 ore ✅');
     console.log('• Zero accavallamenti ✅');
