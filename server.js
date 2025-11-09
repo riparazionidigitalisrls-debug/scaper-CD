@@ -602,52 +602,42 @@ function getDiskStats() {
 }
 
 // ========================================
-// CRON JOBS AGGIORNATI (PIÙ SICURI)
+// CRON JOBS ANTI-OVERSELLING (DROPSHIPPING)
 // ========================================
 if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
   
-  // ❌ DISABILITATO - Sync ogni 6 ore (RISCHIO BAN)
-  // cron.schedule('0 */6 * * *', () => {
-  //   console.log('[CRON] DISABILITATO - Rischio ban');
-  // });
-  
-  // ✅ Stock check mattina alle 5:00 (SOLO disponibilità)
-  cron.schedule('0 5 * * *', () => {
-    console.log('[CRON] Avvio stock check mattutino (2500 prodotti)...');
-    spawn('node', ['stock-checker-light.js', '2500'], {
+  // ✅ Full scan notturno alle 3:00 (prodotti + prezzi aggiornati)
+  cron.schedule('0 3 * * *', () => {
+    console.log('[CRON] Full scan notturno (200 pagine) - Prodotti + Prezzi');
+    spawn('node', ['scraper_componenti_wpai_min.js', '200'], {
       detached: true,
       stdio: 'ignore'
     }).unref();
   });
   
-  // ✅ Stock check pomeriggio alle 15:00 (SOLO disponibilità)
-  cron.schedule('0 15 * * *', () => {
-    console.log('[CRON] Avvio stock check pomeridiano (2500 prodotti)...');
-    spawn('node', ['stock-checker-light.js', '2500'], {
+  // ✅ Stock check ogni 2 ore durante il giorno (8:00-22:00)
+  cron.schedule('0 8,10,12,14,16,18,20,22 * * *', () => {
+    console.log('[CRON] Stock check diurno (ogni 2h) - Anti-overselling');
+    spawn('node', ['stock-checker-light.js', '5000'], {
       detached: true,
       stdio: 'ignore'
     }).unref();
   });
   
-  // ✅ Full scan SOLO domenica alle 3:00 (ogni 2 settimane)
-  cron.schedule('0 3 * * 0', () => {
-    // Calcola numero settimana per fare ogni 2 settimane
-    const weekNumber = Math.floor(Date.now() / (7 * 24 * 60 * 60 * 1000));
-    if (weekNumber % 2 === 0) {
-      console.log('[CRON] Avvio full scan bisettimanale (200 pagine)...');
-      spawn('node', ['scraper_componenti_enterprise.js', '200'], {
-        detached: true,
-        stdio: 'ignore'
-      }).unref();
-    } else {
-      console.log('[CRON] Settimana dispari, skip full scan');
-    }
+  // ✅ Stock check notturno ridotto (0:00 e 4:00)
+  cron.schedule('0 0,4 * * *', () => {
+    console.log('[CRON] Stock check notturno (ogni 4h)');
+    spawn('node', ['stock-checker-light.js', '5000'], {
+      detached: true,
+      stdio: 'ignore'
+    }).unref();
   });
   
-  console.log('⏰ Cron jobs SICURI attivati:');
-  console.log('   - Stock check: 5:00 e 15:00 (solo disponibilità)');
-  console.log('   - Full scraping: domenica 3:00 (ogni 2 settimane)');
-  console.log('   - Sync ogni 6 ore: DISABILITATO (rischio ban)');
+  console.log('⏰ Cron jobs ANTI-OVERSELLING attivati:');
+  console.log('   - Full scan: ogni notte alle 3:00');
+  console.log('   - Stock check diurno: ogni 2 ore (8:00-22:00)');
+  console.log('   - Stock check notturno: ogni 4 ore (0:00, 4:00)');
+  console.log('   - Totale verifiche stock: 10x/giorno');
   
 } else {
   console.log('⏰ Cron jobs NON attivati (development mode)');
@@ -669,9 +659,10 @@ app.listen(PORT, () => {
   console.log(`Render: ${process.env.RENDER ? 'Yes' : 'No'}`);
   
   if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
-    console.log('\n⚠️  CRON MODIFICATI PER SICUREZZA:');
-    console.log('• Sync ogni 6 ore: DISABILITATO');
-    console.log('• Stock check: 5:00 e 15:00');
-    console.log('• Full scan: solo domenica ogni 2 settimane');
+    console.log('\n⚡ SISTEMA ANTI-OVERSELLING ATTIVO:');
+    console.log('• Full scan: ogni notte ore 3:00');
+    console.log('• Stock check: ogni 2h (giorno) + ogni 4h (notte)');
+    console.log('• Verifiche totali: 10x/giorno');
+    console.log('• Finestra overselling: MAX 2 ore');
   }
 });
