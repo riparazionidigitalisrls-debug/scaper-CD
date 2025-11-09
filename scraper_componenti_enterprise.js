@@ -17,7 +17,7 @@ class ScraperComponentiEnterprise {
     this.baseUrl = 'https://www.componentidigitali.com';
     
     // Directory setup compatibile con Render
-    const baseDir = process.env.RENDER ? '/tmp' : '.';
+    const baseDir = process.env.DATA_DIR || (process.env.RENDER ? '/data' : '.');
     this.outputDir = path.join(baseDir, 'output');
     this.imagesDir = path.join(this.outputDir, 'images');
     this.checkpointFile = path.join(this.outputDir, 'checkpoint.json');
