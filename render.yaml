@@ -3,22 +3,30 @@ services:
     name: scraper-componenti
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: standard  # $25/mese per 4GB RAM necessari per 4000+ prodotti
+    # 🆕 UPGRADE A STARTER (necessario per disk)
+    plan: starter
     region: frankfurt
+    
+    # 🆕 AGGIUNGI DISCO PERSISTENTE
+    disk:
+      name: scraper-persistent-data
+      mountPath: /data
+      sizeGB: 1  # 1GB sufficiente (circa 50k prodotti + immagini)
+    
+    # Variabili ambiente
     envVars:
       - key: NODE_ENV
         value: production
       - key: RENDER
         value: true
-      - key: RENDER_PLAN
-        value: standard
       - key: PORT
         value: 10000
-      - key: IMAGES_BASE_URL
-        value: https://scraper-componenti.onrender.com/images
-      - key: USE_ENTERPRISE
-        value: false  # Imposta true per forzare sempre enterprise mode
+      # 🆕 AGGIUNGI QUESTA
+      - key: DATA_DIR
+        value: /data
+    
+    # Health check
     healthCheckPath: /healthz
-    numInstances: 1
-    buildCommand: npm install
-    startCommand: node server.js
+    
+    # Auto deploy
+    autoDeploy: true
