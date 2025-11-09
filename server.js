@@ -10,8 +10,8 @@ const cron = require('node-cron');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Path per output (Render usa /tmp)
-const outputBase = process.env.RENDER ? '/tmp' : '.';
+// Path per output (Render usa /data per persistenza)
+const outputBase = process.env.DATA_DIR || (process.env.RENDER ? '/data' : '.');
 const outputDir = path.join(outputBase, 'output');
 
 // File paths - supporta sia legacy che nuovo sistema
