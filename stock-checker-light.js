@@ -1,17 +1,15 @@
-// stock-checker-light.js
-// Sistema separato e sicuro per controllo stock/disponibilità
-// Rispetta crawl-delay di 0,2 secondI
-// VERSIONE CORRETTA CON LOOP FUNZIONANTE
+// stock-checker-light.js - VERSIONE CORRETTA E OTTIMIZZATA
+// Sistema ultra-veloce per controllo stock/disponibilità
+// Target: 200ms per prodotto = 5000 prodotti in ~20 minuti
 
 const { chromium } = require('playwright');
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
-const csv = require('csv-writer');
 
 class StockCheckerLight {
   constructor() {
-    // Percorsi file (compatibili con sistema esistente)
+    // Percorsi file
     const baseDir = process.env.DATA_DIR || (process.env.RENDER ? '/data' : '.');
     this.outputDir = path.join(baseDir, 'output');
     this.csvLatestPath = path.join(this.outputDir, 'prodotti_latest.csv');
@@ -22,30 +20,29 @@ class StockCheckerLight {
     // URL base
     this.baseUrl = 'https://www.componentidigitali.com';
     
-    // CONFIGURAZIONE ULTRA-RAPIDA (rispetta robots.txt)
+    // 🚀 CONFIGURAZIONE ULTRA-VELOCE CORRETTA
     this.config = {
-      crawlDelay: 200,           // 0,2 secondi tra richieste (più dei 10 richiesti)
-      batchSize: 200,               // 200 prodotti per batch
-      pauseBetweenBatches: 5000, // o,5 minuti tra batch
-      maxProductsPerSession: 5000, // Max prodotti per sessione (20min )
-      sessionTimeout: 1800000,    // 8 ore max per sessione
+      crawlDelay: 200,              // ✅ 200ms tra richieste (rispetta robots.txt)
+      batchSize: 50,                // ✅ Batch più piccoli per controllo migliore
+      pauseBetweenBatches: 2000,    // ✅ Solo 2 secondi tra batch
+      maxProductsPerSession: 5000,  // Max prodotti per sessione
+      sessionTimeout: 1800000,      // 30 minuti max per sessione
+      pageLoadTimeout: 15000,       // ✅ Timeout più veloce per pagine
       
       // User agents rotation
       userAgents: [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0'
       ],
       
       // Retry configuration
-      maxRetries: 2,
-      retryDelay: 30000, // 30 secondi prima di riprovare
+      maxRetries: 1,            // ✅ Solo 1 retry per velocità
+      retryDelay: 5000,         // ✅ 5 secondi prima di riprovare
       
       // Safety features
-      stopOnErrors: 5,  // Ferma dopo 5 errori consecutivi
-      randomizeOrder: true, // Randomizza ordine prodotti
+      stopOnErrors: 10,         // Ferma dopo 10 errori consecutivi
+      randomizeOrder: true,     // Randomizza ordine prodotti
     };
     
     // Stato
@@ -53,7 +50,7 @@ class StockCheckerLight {
     this.currentIndex = 0;
     this.errors = [];
     this.consecutiveErrors = 0;
-    this.isRunning = true; // Flag per stop graceful
+    this.isRunning = true;
     this.stats = {
       checked: 0,
       updated: 0,
@@ -65,7 +62,8 @@ class StockCheckerLight {
   }
   
   log(message, level = 'INFO') {
-    const line = `[${new Date().toISOString()}] [${level}] ${message}`;
+    const prefix = '[STOCK-CHECK]:';
+    const line = `${prefix} [${new Date().toISOString()}] [${level}] ${message}`;
     console.log(line);
     try {
       fs.appendFileSync(this.logPath, line + '\n');
@@ -80,7 +78,6 @@ class StockCheckerLight {
   
   async loadProducts() {
     try {
-      // Assicurati che la directory esista
       await this.ensureDirectories();
       
       if (!fs.existsSync(this.csvLatestPath)) {
@@ -96,7 +93,7 @@ class StockCheckerLight {
       const lines = csvContent.split('\n').filter(l => l.trim());
       const headers = lines[0].split(',').map(h => h.trim());
       
-      // Trova indici colonne importanti
+      // Trova indici colonne
       const skuIndex = headers.findIndex(h => h.toLowerCase() === 'sku');
       const nameIndex = headers.findIndex(h => h.toLowerCase() === 'name');
       const stockQtyIndex = headers.findIndex(h => h.toLowerCase().includes('stock_quantity'));
@@ -105,7 +102,7 @@ class StockCheckerLight {
       this.products = [];
       
       // Parsa prodotti
-      for (let i = 1; i < lines.length; i++) {
+      for (let i = 1; i < lines.length && i < 5001; i++) { // Max 5000 prodotti
         const cols = this.parseCSVLine(lines[i]);
         if (cols[skuIndex]) {
           this.products.push({
@@ -126,7 +123,7 @@ class StockCheckerLight {
       // Randomizza ordine se configurato
       if (this.config.randomizeOrder) {
         this.shuffleArray(this.products);
-        this.log('Ordine prodotti randomizzato per evitare pattern');
+        this.log('Ordine prodotti randomizzato');
       }
       
       // Carica progresso se esiste
@@ -189,9 +186,9 @@ class StockCheckerLight {
         const data = await fsp.readFile(this.progressPath, 'utf8');
         const progress = JSON.parse(data);
         
-        // Resume solo se < 24 ore
+        // Resume solo se < 2 ore
         const hoursOld = (Date.now() - progress.timestamp) / (1000 * 60 * 60);
-        if (hoursOld < 24) {
+        if (hoursOld < 2) {
           this.currentIndex = progress.currentIndex;
           this.stats = progress.stats;
           this.log(`Resume da prodotto ${this.currentIndex}`);
@@ -208,25 +205,23 @@ class StockCheckerLight {
     return this.config.userAgents[Math.floor(Math.random() * this.config.userAgents.length)];
   }
   
-  async checkProductStock(context, product) {
-    const page = await context.newPage();
-    
+  async checkProductStock(page, product) {
     try {
       // Costruisci URL ricerca per SKU
       const searchUrl = `${this.baseUrl}/default.asp?cmdString=${product.sku}&cmd=searchProd&bFormSearch=1`;
       
       this.log(`Checking: ${product.sku}`);
       
-      // Naviga con timeout generoso
+      // 🚀 NAVIGAZIONE VELOCE - NO WAIT INUTILI!
       await page.goto(searchUrl, { 
-        waitUntil: 'domcontentloaded',
-        timeout: 30000 
+        waitUntil: 'domcontentloaded',  // ✅ Solo DOM, non aspetta tutto
+        timeout: this.config.pageLoadTimeout 
       });
       
-      // Aspetta un po' per il caricamento
-      await page.waitForTimeout(2000);
+      // ⚡ NESSUN WAIT FISSO! Solo se serve veramente
+      // await page.waitForTimeout(2000); // ❌ RIMOSSO!
       
-      // Estrai info disponibilità
+      // 🚀 Estrai info disponibilità IMMEDIATAMENTE
       const stockInfo = await page.evaluate((targetSku) => {
         const bodyText = document.body.innerText || '';
         
@@ -234,80 +229,106 @@ class StockCheckerLight {
         let quantity = null;
         let available = null;
         
-        // Pattern specifici per il sito
-        const qtyMatch = bodyText.match(new RegExp(`${targetSku}[\\s\\S]*?Disponibile\\s*\\(\\s*(\\d+)\\s*PZ\\s*\\)`, 'i'));
-        if (qtyMatch) {
-          quantity = parseInt(qtyMatch[1]);
-          available = true;
-        } else if (bodyText.match(new RegExp(`${targetSku}[\\s\\S]*?(?:non\\s+disponibile|esaurito|sold\\s*out)`, 'i'))) {
-          quantity = 0;
-          available = false;
-        } else if (bodyText.match(new RegExp(`${targetSku}[\\s\\S]*?disponibile`, 'i'))) {
-          quantity = 10; // Default conservativo
-          available = true;
-        }
+        // Pattern veloci e diretti
+        const patterns = [
+          /disponibilit[àa]\s*:\s*(\d+)/i,
+          /giacenza\s*:\s*(\d+)/i,
+          /stock\s*:\s*(\d+)/i,
+          /quantit[àa]\s*:\s*(\d+)/i,
+          /pezzi\s+disponibili\s*:\s*(\d+)/i,
+          /\b(\d+)\s+disponibil[ei]/i,
+          /\b(\d+)\s+pezz[oi]/i,
+          /\b(\d+)\s+in\s+stock/i
+        ];
         
-        // Se non trova il prodotto specifico, controlla generale
-        if (quantity === null) {
-          const generalQty = bodyText.match(/Disponibile\s*\(\s*(\d+)\s*PZ\s*\)/i);
-          if (generalQty) {
-            quantity = parseInt(generalQty[1]);
-            available = true;
-          } else if (/non\s+disponibile|esaurito/i.test(bodyText)) {
-            quantity = 0;
-            available = false;
+        for (const pattern of patterns) {
+          const match = bodyText.match(pattern);
+          if (match && match[1]) {
+            quantity = parseInt(match[1]);
+            break;
           }
         }
         
-        return { quantity, available };
+        // Check disponibilità generale
+        if (quantity === null) {
+          if (/non disponibile|esaurito|terminato|sold out|out of stock/i.test(bodyText)) {
+            quantity = 0;
+            available = false;
+          } else if (/disponibile|in stock|acquista|aggiungi/i.test(bodyText)) {
+            quantity = 1; // Disponibile ma quantità non specificata
+            available = true;
+          }
+        } else {
+          available = quantity > 0;
+        }
+        
+        // Verifica che siamo sulla pagina giusta
+        const isCorrectProduct = bodyText.toLowerCase().includes(targetSku.toLowerCase());
+        
+        return {
+          quantity: quantity !== null ? quantity : 0,
+          available: available !== null ? available : false,
+          foundProduct: isCorrectProduct
+        };
       }, product.sku);
       
-      // Aggiorna prodotto
-      if (stockInfo.quantity !== null) {
+      // Aggiorna prodotto solo se trovato
+      if (stockInfo.foundProduct) {
         product.newStock = stockInfo.quantity;
         product.newStatus = stockInfo.available ? 'instock' : 'outofstock';
         
-        // Log cambiamenti importanti
+        // Log cambimenti importanti
         if (product.currentStock > 0 && product.newStock === 0) {
           this.stats.outOfStock.push(product.sku);
-          this.log(`⚠️ OUT OF STOCK: ${product.sku} (era ${product.currentStock})`, 'WARN');
+          this.log(`❌ OUT OF STOCK: ${product.sku} (era ${product.currentStock})`, 'WARN');
         } else if (product.currentStock === 0 && product.newStock > 0) {
           this.stats.backInStock.push(product.sku);
           this.log(`✓ BACK IN STOCK: ${product.sku} (ora ${product.newStock})`);
         } else if (product.currentStock !== product.newStock) {
-          this.log(`Aggiornato: ${product.sku} da ${product.currentStock} a ${product.newStock}`);
+          this.log(`📊 Stock update: ${product.sku} da ${product.currentStock} a ${product.newStock}`);
         }
         
-        this.stats.updated++;
+        if (product.currentStock !== product.newStock) {
+          this.stats.updated++;
+        }
+        
+        this.consecutiveErrors = 0; // Reset errori consecutivi
+        return true;
+      } else {
+        this.log(`⚠️ Prodotto ${product.sku} non trovato nella pagina`, 'WARN');
+        return false;
       }
-      
-      this.consecutiveErrors = 0; // Reset errori consecutivi
-      return true;
       
     } catch (error) {
       this.log(`Errore check ${product.sku}: ${error.message}`, 'ERROR');
-      this.errors.push({ sku: product.sku, error: error.message });
       this.stats.errors++;
       this.consecutiveErrors++;
+      
+      if (this.consecutiveErrors >= this.config.stopOnErrors) {
+        throw new Error(`Troppi errori consecutivi (${this.consecutiveErrors}), stop.`);
+      }
+      
       return false;
       
     } finally {
+      // Chiudi sempre la pagina per liberare memoria
       await page.close();
     }
   }
   
   async runStockCheck(maxProducts = null) {
-    const sessionStart = Date.now();
-    const productsToCheck = maxProducts || this.config.maxProductsPerSession;
+    const productsToCheck = Math.min(
+      maxProducts || this.config.maxProductsPerSession,
+      this.products.length - this.currentIndex
+    );
     
     this.log('╔════════════════════════════════════════╗');
     this.log('║   STOCK CHECKER LIGHT - AVVIO         ║');
     this.log('╚════════════════════════════════════════╝');
-    this.log(`Modalità: Ultra-conservativa (12 sec/prodotto)`);
-    this.log(`Prodotti da controllare: ${Math.min(productsToCheck, this.products.length - this.currentIndex)}`);
-    this.log(`Tempo stimato: ${Math.round(productsToCheck * 12 / 60)} minuti`);
+    this.log(`Modalità: Ultra-veloce (${this.config.crawlDelay}ms/prodotto)`);
+    this.log(`Prodotti da controllare: ${productsToCheck}`);
+    this.log(`Tempo stimato: ${Math.ceil((productsToCheck * (this.config.crawlDelay + 500)) / 60000)} minuti`);
     
-    // Lancia browser
     const browser = await chromium.launch({
       headless: true,
       args: [
@@ -316,94 +337,91 @@ class StockCheckerLight {
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process'
+        '--disable-features=IsolateOrigins',
+        '--disable-site-isolation-trials',
+        '--disable-blink-features=AutomationControlled'
       ]
     });
     
-    let context = null;
+    let context = await browser.newContext({
+      userAgent: this.getRandomUserAgent(),
+      viewport: { width: 1920, height: 1080 },
+      bypassCSP: true,
+      ignoreHTTPSErrors: true
+    });
+    
+    // 🚀 PRE-CARICA UNA PAGINA VUOTA PER WARMUP
+    const warmupPage = await context.newPage();
+    await warmupPage.goto('about:blank');
+    await warmupPage.close();
+    
+    const sessionStart = Date.now();
+    let productsInBatch = 0;
+    let batchCount = 0;
     
     try {
-      context = await browser.newContext({
-        userAgent: this.getRandomUserAgent(),
-        viewport: { width: 1920, height: 1080 }
-      });
-      
-      let batchCount = 0;
-      let productsInBatch = 0;
-      
-      // LOOP PRINCIPALE CORRETTO
-      while (this.isRunning && 
-             this.currentIndex < this.products.length && 
-             this.stats.checked < productsToCheck &&
-             this.consecutiveErrors < this.config.stopOnErrors) {
+      // 🔥 LOOP PRINCIPALE OTTIMIZZATO
+      while (this.currentIndex < this.products.length && 
+             this.stats.checked < productsToCheck && 
+             this.isRunning) {
         
         const product = this.products[this.currentIndex];
+        this.currentIndex++;
+        
+        // 🚀 CREA PAGINA VELOCE
+        const page = await context.newPage();
         
         // Check prodotto
-        const success = await this.checkProductStock(context, product);
+        const success = await this.checkProductStock(page, product);
         
-        this.stats.checked++;
-        this.currentIndex++;
-        productsInBatch++;
-        
-        // Log progresso ogni 5 prodotti
-        if (this.stats.checked % 5 === 0) {
-          this.log(`Progress: ${this.stats.checked}/${productsToCheck} controllati`);
-        }
-        
-        // Salva progresso ogni 10 prodotti
-        if (this.stats.checked % 10 === 0) {
-          await this.saveProgress();
-          this.log('Checkpoint salvato');
+        if (success) {
+          this.stats.checked++;
+          productsInBatch++;
+          
+          // Log progresso ogni 10 prodotti
+          if (this.stats.checked % 10 === 0) {
+            const elapsed = (Date.now() - sessionStart) / 1000;
+            const rate = this.stats.checked / elapsed;
+            this.log(`Progress: ${this.stats.checked}/${productsToCheck} (${rate.toFixed(1)} prod/sec)`);
+          }
+          
+          // Salva progresso ogni 25 prodotti
+          if (this.stats.checked % 25 === 0) {
+            await this.saveProgress();
+          }
         }
         
         // Gestione batch
         if (productsInBatch >= this.config.batchSize) {
           batchCount++;
-          this.log(`Batch ${batchCount} completato. Pausa di ${this.config.pauseBetweenBatches/1000} secondi...`);
+          this.log(`Batch ${batchCount} completato. Mini-pausa ${this.config.pauseBetweenBatches}ms...`);
           
-          // Report parziale
-          this.log(`Statistiche batch: ${this.stats.updated} aggiornati, ${this.stats.errors} errori`);
-          
-          // PAUSA TRA BATCH
+          // ⚡ PAUSA BREVISSIMA TRA BATCH
           await new Promise(resolve => setTimeout(resolve, this.config.pauseBetweenBatches));
           
-          // Reset counter batch
           productsInBatch = 0;
           
-          // LOG IMPORTANTE: Conferma ripresa
-          this.log(`========================================`);
-          this.log(`Ripresa dopo pausa - Batch ${batchCount + 1} in avvio...`);
-          this.log(`Prodotti rimanenti: ${Math.min(productsToCheck - this.stats.checked, this.products.length - this.currentIndex)}`);
-          this.log(`========================================`);
-          
-          // Cambia user agent ogni 3 batch per sicurezza
-          if (batchCount % 3 === 0) {
-            this.log('Rotazione user agent...');
+          // Rotazione context ogni 5 batch
+          if (batchCount % 5 === 0) {
             await context.close();
             context = await browser.newContext({
               userAgent: this.getRandomUserAgent(),
-              viewport: { width: 1920, height: 1080 }
+              viewport: { width: 1920, height: 1080 },
+              bypassCSP: true,
+              ignoreHTTPSErrors: true
             });
-            this.log('Nuovo context browser creato');
+            this.log('Context rotated');
           }
         }
         
-        // Delay tra prodotti solo se non siamo all'ultimo
+        // ⚡ DELAY MINIMO TRA PRODOTTI (rispetta robots.txt)
         if (this.currentIndex < this.products.length && this.stats.checked < productsToCheck) {
-          const delay = this.config.crawlDelay + Math.random() * 2000;
-          await new Promise(resolve => setTimeout(resolve, delay));
+          await new Promise(resolve => setTimeout(resolve, this.config.crawlDelay));
         }
         
         // Check timeout sessione
         if (Date.now() - sessionStart > this.config.sessionTimeout) {
-          this.log('⏰ Timeout sessione raggiunto (8 ore). Salvataggio e uscita.');
-          break;
-        }
-        
-        // Check se dobbiamo fermarci
-        if (!this.isRunning) {
-          this.log('🛑 Stop richiesto, uscita dal loop...');
+          this.log('⏰ Timeout sessione raggiunto. Salvataggio...');
           break;
         }
       }
@@ -412,14 +430,10 @@ class StockCheckerLight {
       
     } catch (error) {
       this.log(`Errore nel loop principale: ${error.message}`, 'ERROR');
-      this.log(`Stack trace: ${error.stack}`, 'ERROR');
       throw error;
       
     } finally {
-      if (context) {
-        await context.close();
-        this.log('Context browser chiuso');
-      }
+      if (context) await context.close();
       await browser.close();
       this.log('Browser chiuso');
     }
@@ -429,30 +443,33 @@ class StockCheckerLight {
     
     // Report finale
     const duration = (Date.now() - this.stats.startTime) / 1000 / 60;
+    const productsPerMinute = Math.round(this.stats.checked / duration);
+    
     this.log('\n╔════════════════════════════════════════╗');
     this.log('║     STOCK CHECK COMPLETATO            ║');
     this.log('╚════════════════════════════════════════╝');
-    this.log(`Durata totale: ${duration.toFixed(1)} minuti`);
-    this.log(`Prodotti controllati: ${this.stats.checked}`);
-    this.log(`Prodotti aggiornati: ${this.stats.updated}`);
-    this.log(`Nuovi out of stock: ${this.stats.outOfStock.length}`);
-    this.log(`Tornati disponibili: ${this.stats.backInStock.length}`);
-    this.log(`Errori: ${this.stats.errors}`);
+    this.log(`✅ Durata: ${duration.toFixed(1)} minuti`);
+    this.log(`✅ Prodotti controllati: ${this.stats.checked}`);
+    this.log(`✅ Velocità: ${productsPerMinute} prodotti/minuto`);
+    this.log(`📊 Prodotti aggiornati: ${this.stats.updated}`);
+    this.log(`❌ Out of stock: ${this.stats.outOfStock.length}`);
+    this.log(`✓ Back in stock: ${this.stats.backInStock.length}`);
+    this.log(`⚠️ Errori: ${this.stats.errors}`);
     
-    // Genera report out of stock se ci sono
+    // Genera report se necessario
     if (this.stats.outOfStock.length > 0) {
       const reportPath = path.join(this.outputDir, `out_of_stock_${Date.now()}.txt`);
       await fsp.writeFile(reportPath, this.stats.outOfStock.join('\n'));
-      this.log(`📋 Report OOS salvato: ${reportPath}`);
+      this.log(`📋 Report OOS: ${reportPath}`);
     }
     
-    // Elimina progress file se completato
+    // Cleanup progress file
     if (this.currentIndex >= this.products.length || this.stats.checked >= productsToCheck) {
       try {
         await fsp.unlink(this.progressPath);
-        this.log('✓ Check completo, progress file eliminato');
+        this.log('✓ Progress file eliminato');
       } catch (e) {
-        // Ignora errori di cancellazione
+        // Ignora
       }
     }
   }
@@ -461,18 +478,18 @@ class StockCheckerLight {
     try {
       this.log('Salvataggio CSV aggiornato...');
       
-      // Rileggi CSV originale per mantenere struttura
+      // Rileggi CSV originale
       const csvContent = await fsp.readFile(this.csvBackupPath, 'utf8');
       const lines = csvContent.split('\n');
       const headers = lines[0];
       
-      // Trova indici colonne da aggiornare
+      // Trova indici colonne
       const headerArray = headers.split(',').map(h => h.trim());
       const skuIndex = headerArray.findIndex(h => h.toLowerCase() === 'sku');
       const stockQtyIndex = headerArray.findIndex(h => h.toLowerCase().includes('stock_quantity'));
       const stockStatusIndex = headerArray.findIndex(h => h.toLowerCase().includes('stock_status'));
       
-      // Crea mappa SKU -> prodotto per lookup veloce
+      // Crea mappa SKU -> prodotto
       const productMap = new Map();
       this.products.forEach(p => {
         if (p.newStock !== null) {
@@ -482,7 +499,7 @@ class StockCheckerLight {
       
       this.log(`Aggiornamento di ${productMap.size} prodotti nel CSV...`);
       
-      // Ricostruisci CSV con stock aggiornati
+      // Ricostruisci CSV
       const updatedLines = [headers];
       
       for (let i = 1; i < lines.length; i++) {
@@ -493,7 +510,6 @@ class StockCheckerLight {
         
         if (sku && productMap.has(sku)) {
           const product = productMap.get(sku);
-          // Aggiorna solo stock_quantity e stock_status
           cols[stockQtyIndex] = product.newStock.toString();
           cols[stockStatusIndex] = product.newStatus;
         }
@@ -508,7 +524,6 @@ class StockCheckerLight {
       await fsp.writeFile(this.csvLatestPath, updatedContent, 'utf8');
       
       this.log(`✓ CSV aggiornato: ${this.csvLatestPath}`);
-      this.log(`✓ Mantenuti tutti i dati originali, aggiornati solo stock`);
       
     } catch (error) {
       this.log(`Errore salvataggio CSV: ${error.message}`, 'ERROR');
@@ -516,9 +531,8 @@ class StockCheckerLight {
     }
   }
   
-  // Metodo per fermare gracefully
   stop() {
-    this.log('Richiesta di stop ricevuta...');
+    this.log('Stop richiesto...');
     this.isRunning = false;
   }
 }
@@ -530,14 +544,14 @@ class StockCheckerLight {
 async function main() {
   const checker = new StockCheckerLight();
   
-  // Gestione segnali per stop graceful
+  // Gestione segnali
   process.on('SIGTERM', () => {
-    console.log('SIGTERM ricevuto, arresto in corso...');
+    console.log('SIGTERM ricevuto');
     checker.stop();
   });
   
   process.on('SIGINT', () => {
-    console.log('SIGINT ricevuto (Ctrl+C), arresto in corso...');
+    console.log('SIGINT ricevuto');
     checker.stop();
   });
   
@@ -551,23 +565,20 @@ async function main() {
     }
     
     // Determina quanti prodotti controllare
-    const maxProducts = process.argv[2] ? parseInt(process.argv[2]) : null;
+    const maxProducts = process.argv[2] ? parseInt(process.argv[2]) : 5000;
     
-    if (maxProducts) {
-      console.log(`\n📦 Modalità test: controllo di ${maxProducts} prodotti`);
-    } else {
-      console.log(`\n📦 Modalità completa: controllo fino a ${checker.config.maxProductsPerSession} prodotti`);
-    }
+    console.log('\n🚀 STOCK CHECKER ULTRA-VELOCE');
+    console.log(`📦 Prodotti da controllare: ${Math.min(maxProducts, totalProducts)}`);
+    console.log(`⏱️ Tempo stimato: ${Math.ceil((Math.min(maxProducts, totalProducts) * 250) / 60000)} minuti`);
     
     // Avvia check
     await checker.runStockCheck(maxProducts);
     
-    console.log('\n✅ Stock check completato con successo!');
+    console.log('\n✅ Stock check completato!');
     process.exit(0);
     
   } catch (error) {
-    console.error('\n❌ ERRORE FATALE:', error.message);
-    console.error('Stack:', error.stack);
+    console.error('\n❌ ERRORE:', error.message);
     process.exit(1);
   }
 }
@@ -575,7 +586,7 @@ async function main() {
 // Avvia se chiamato direttamente
 if (require.main === module) {
   main().catch(error => {
-    console.error('Errore non gestito:', error);
+    console.error('Errore:', error);
     process.exit(1);
   });
 }
