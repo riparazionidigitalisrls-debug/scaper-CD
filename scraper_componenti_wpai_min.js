@@ -17,8 +17,8 @@ class ScraperWPAIFinal {
     this.outputDir = path.join(baseDir, 'output');
     this.imagesDir = path.join(this.outputDir, 'images');
 
-    this.csvFinalPath = path.join(this.outputDir, 'prodotti_wpimport_min.csv');
-    this.csvTmpPath   = path.join(this.outputDir, 'prodotti_wpimport_min.tmp.csv');
+    this.csvFinalPath = path.join(this.outputDir, 'prodotti_latest.csv'); // Nome principale per WP Import
+    this.csvTmpPath   = path.join(this.outputDir, 'prodotti_latest.tmp.csv');
     this.logPath      = path.join(this.outputDir, 'scraper.log');
 
     this.imagesHostBaseUrl = process.env.IMAGES_BASE_URL || '';
