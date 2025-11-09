@@ -24,11 +24,11 @@ class StockCheckerLight {
     
     // CONFIGURAZIONE ULTRA-CONSERVATIVA (rispetta robots.txt)
     this.config = {
-      crawlDelay: 12000,           // 12 secondi tra richieste (più dei 10 richiesti)
-      batchSize: 10,               // Solo 10 prodotti per batch
-      pauseBetweenBatches: 120000, // 2 minuti tra batch
-      maxProductsPerSession: 2500, // Max prodotti per sessione (8 ore)
-      sessionTimeout: 28800000,    // 8 ore max per sessione
+      crawlDelay: 200,           // 0,2 secondi tra richieste (più dei 10 richiesti)
+      batchSize: 200,               // 200 prodotti per batch
+      pauseBetweenBatches: 5000, // o,5 minuti tra batch
+      maxProductsPerSession: 5000, // Max prodotti per sessione (20min )
+      sessionTimeout: 1800000,    // 8 ore max per sessione
       
       // User agents rotation
       userAgents: [
