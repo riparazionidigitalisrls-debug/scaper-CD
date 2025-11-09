@@ -12,7 +12,7 @@ const csv = require('csv-writer');
 class StockCheckerLight {
   constructor() {
     // Percorsi file (compatibili con sistema esistente)
-    const baseDir = process.env.RENDER ? '/tmp' : '.';
+    const baseDir = process.env.DATA_DIR || (process.env.RENDER ? '/data' : '.');
     this.outputDir = path.join(baseDir, 'output');
     this.csvLatestPath = path.join(this.outputDir, 'prodotti_latest.csv');
     this.csvBackupPath = path.join(this.outputDir, `backup_${Date.now()}.csv`);
