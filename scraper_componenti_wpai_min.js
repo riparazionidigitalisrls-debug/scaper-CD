@@ -20,8 +20,13 @@ class ScraperWPAIFinal {
     this.csvFinalPath = path.join(this.outputDir, 'prodotti_latest.csv'); // Nome principale per WP Import
     this.csvTmpPath   = path.join(this.outputDir, 'prodotti_latest.tmp.csv');
     this.logPath      = path.join(this.outputDir, 'scraper.log');
+    this.checkpointPath = path.join(this.outputDir, 'scraper_checkpoint.json'); // 🆕 Checkpoint
 
     this.imagesHostBaseUrl = process.env.IMAGES_BASE_URL || '';
+    
+    // 🆕 Configurazione checkpoint
+    this.saveProgressEvery = 20; // Salva ogni 20 pagine
+    this.isShuttingDown = false;
 
     this.ensureDirs();
     
@@ -62,6 +67,58 @@ class ScraperWPAIFinal {
     const line = `[${new Date().toISOString()}] ${m}`;
     console.log(line);
     try { fs.appendFileSync(this.logPath, line + '\n'); } catch (_) {}
+  }
+
+  // 🆕 Salva checkpoint per recovery
+  async saveCheckpoint(currentPage) {
+    try {
+      const checkpoint = {
+        currentPage,
+        productsCount: this.products.length,
+        seenCount: this.seen.size,
+        timestamp: Date.now(),
+        lastUrl: this.lastUrl || null
+      };
+      await fsp.writeFile(this.checkpointPath, JSON.stringify(checkpoint, null, 2));
+      this.log(`✓ Checkpoint salvato: pagina ${currentPage}, ${this.products.length} prodotti`);
+    } catch (e) {
+      this.log(`Errore salvataggio checkpoint: ${e.message}`);
+    }
+  }
+
+  // 🆕 Carica checkpoint esistente
+  async loadCheckpoint() {
+    try {
+      if (fs.existsSync(this.checkpointPath)) {
+        const data = await fsp.readFile(this.checkpointPath, 'utf8');
+        const checkpoint = JSON.parse(data);
+        
+        // Resume solo se < 24 ore
+        const hoursOld = (Date.now() - checkpoint.timestamp) / (1000 * 60 * 60);
+        if (hoursOld < 24) {
+          this.log(`📂 Checkpoint trovato: resume da pagina ${checkpoint.currentPage}`);
+          return checkpoint;
+        } else {
+          this.log(`Checkpoint troppo vecchio (${hoursOld.toFixed(1)}h), ignoro`);
+          await fsp.unlink(this.checkpointPath);
+        }
+      }
+    } catch (e) {
+      this.log(`Errore caricamento checkpoint: ${e.message}`);
+    }
+    return null;
+  }
+
+  // 🆕 Elimina checkpoint completato
+  async clearCheckpoint() {
+    try {
+      if (fs.existsSync(this.checkpointPath)) {
+        await fsp.unlink(this.checkpointPath);
+        this.log('✓ Checkpoint eliminato (completato con successo)');
+      }
+    } catch (e) {
+      this.log(`Errore eliminazione checkpoint: ${e.message}`);
+    }
   }
 
   getImageFilename(sku) {
@@ -449,6 +506,15 @@ class ScraperWPAIFinal {
   }
 
   async scrapeAll(startUrl, maxPages = 20) {
+    // 🆕 Carica checkpoint se esiste
+    const checkpoint = await this.loadCheckpoint();
+    let startPage = 1;
+    
+    if (checkpoint) {
+      startPage = checkpoint.currentPage + 1; // Riprendi dalla pagina successiva
+      this.log(`🔄 Resume da pagina ${startPage} (checkpoint recuperato)`);
+    }
+
     const browser = await chromium.launch({
       headless: true,
       args: [
@@ -471,10 +537,35 @@ class ScraperWPAIFinal {
       let url = startUrl;
       let n = 0;
       
+      // 🆕 Se resume, naviga alla pagina corretta
+      if (checkpoint && startPage > 1) {
+        // Costruisci URL con numero pagina
+        url = startUrl.includes('&pg=') 
+          ? startUrl.replace(/pg=\d+/, `pg=${startPage}`)
+          : `${startUrl}&pg=${startPage}`;
+        n = startPage - 1; // Parti dal conteggio corretto
+        this.log(`Navigazione diretta a pagina ${startPage}`);
+      }
+      
       while (url && n < maxPages) {
+        // 🆕 Check shutdown flag
+        if (this.isShuttingDown) {
+          this.log('⚠️ Shutdown richiesto, salvataggio in corso...');
+          break;
+        }
+
         n++;
+        this.lastUrl = url; // 🆕 Traccia ultimo URL
         this.log(`=== PAGINA ${n}/${maxPages} ===`);
         const next = await this.scrapePage(page, url);
+        
+        // 🆕 Salva checkpoint ogni N pagine
+        if (n % this.saveProgressEvery === 0) {
+          await this.saveCSV(); // Salva CSV parziale
+          await this.saveCheckpoint(n); // Salva posizione
+          this.log(`💾 Progress salvato: ${this.products.length} prodotti fino a pagina ${n}`);
+        }
+        
         if (next && next !== url) {
           url = next;
           // ⚠️ MODIFICA v2.0: Rallentamento da 1-2s a 1.5-3s per maggiore precisione
@@ -522,9 +613,53 @@ class ScraperWPAIFinal {
   }
 
   async run(maxPages = 20) {
+    // 🆕 Setup SIGTERM handler
+    const gracefulShutdown = async (signal) => {
+      if (this.isShuttingDown) return;
+      this.isShuttingDown = true;
+      
+      this.log(`\n⚠️ ${signal} ricevuto! Salvataggio graceful in corso...`);
+      
+      try {
+        if (this.products.length > 0) {
+          await this.saveCSV();
+          this.log('✅ CSV salvato prima dello shutdown');
+        }
+        
+        // Non eliminiamo checkpoint così può resumare
+        this.log('✅ Checkpoint mantenuto per resume');
+        this.log('✅ Graceful shutdown completato');
+        
+        process.exit(0);
+      } catch (err) {
+        this.log(`❌ Errore durante shutdown: ${err.message}`);
+        process.exit(1);
+      }
+    };
+    
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+    
     const startUrl = `${this.baseUrl}/default.asp?cmdString=iphone&cmd=searchProd&bFormSearch=1`;
-    await this.scrapeAll(startUrl, maxPages);
-    await this.saveCSV();
+    
+    try {
+      await this.scrapeAll(startUrl, maxPages);
+      await this.saveCSV(); // Salvataggio finale
+      await this.clearCheckpoint(); // 🆕 Elimina checkpoint se completato con successo
+      this.log('✅ Scraping completato con successo');
+    } catch (err) {
+      this.log(`❌ ERRORE FATALE: ${err.message}`);
+      this.log(`Stack: ${err.stack}`);
+      
+      // Salva comunque quello che hai
+      if (this.products.length > 0) {
+        this.log('⚠️ Tentativo salvataggio prodotti parziali...');
+        await this.saveCSV();
+        this.log('✅ CSV parziale salvato');
+      }
+      
+      throw err; // Propaga errore per exit code
+    }
   }
 }
 
