@@ -136,9 +136,11 @@ class ScraperWPAIFinal {
     this.log(`Scraping: ${url}`);
     try {
       await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
-      await page.waitForTimeout(800);
+      // ⚠️ MODIFICA v2.0: Aumentato da 800ms a 1200ms per caricamento completo
+      await page.waitForTimeout(1200);
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-      await page.waitForTimeout(600);
+      // ⚠️ MODIFICA v2.0: Aumentato da 600ms a 900ms per rendering lazy-load
+      await page.waitForTimeout(900);
 
       const items = await page.evaluate(() => {
         const nodes = document.querySelectorAll('div[class*="prod"]');
@@ -253,8 +255,8 @@ class ScraperWPAIFinal {
             }
           }
 
-          // === ESTRAZIONE STOCK MIGLIORATA ===
-          let stockQty = 1;
+          // === ESTRAZIONE STOCK MIGLIORATA - v2.0 ANTI-OVERSELLING ===
+          let stockQty = 1; // Default sicuro: 1 invece di 10
           
           // Prima cerca il pattern specifico "Disponibile (X PZ)"
           const qtyParens = txt.match(/[Dd]isponibile\s*\(\s*(\d+)\s*PZ\s*\)/i);
@@ -263,13 +265,15 @@ class ScraperWPAIFinal {
           } else if (/non\s+disponibile|esaurito|sold\s*out/i.test(txt)) {
             stockQty = 0;
           } else if (/disponibile|available|in\s*stock/i.test(txt)) {
-            // Se dice solo "Disponibile" senza quantità, usa un valore prudente
-            stockQty = 10; // Più realistico di 999
+            // ⚠️ MODIFICA v2.0: Se dice solo "Disponibile" senza quantità precisa, 
+            // usa 1 invece di 10 per evitare overselling
+            stockQty = 1; // ANTI-OVERSELLING: prudente invece di ottimista
           } else {
             const qtyMatch = txt.match(/(?:pezzi|pz|qty|quantità)[:.]?\s*(\d+)/i);
             if (qtyMatch) {
               stockQty = parseInt(qtyMatch[1]);
             }
+            // Se non trova nessun dato, mantiene 1 (inizializzazione)
           }
 
           // === ESTRAZIONE IMMAGINE (invariata) ===
@@ -473,7 +477,9 @@ class ScraperWPAIFinal {
         const next = await this.scrapePage(page, url);
         if (next && next !== url) {
           url = next;
-          await page.waitForTimeout(1000 + Math.random() * 1000);
+          // ⚠️ MODIFICA v2.0: Rallentamento da 1-2s a 1.5-3s per maggiore precisione
+          // Questo porta il tempo totale da ~25min a ~35min per 200 pagine
+          await page.waitForTimeout(1500 + Math.random() * 1500);
         } else {
           this.log('Fine paginazione o limite raggiunto');
           break;
