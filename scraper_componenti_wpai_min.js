@@ -17,20 +17,18 @@ class ScraperWPAIFinal {
     this.outputDir = path.join(baseDir, 'output');
     this.imagesDir = path.join(this.outputDir, 'images');
 
-    this.csvFinalPath = path.join(this.outputDir, 'prodotti_latest.csv'); // Nome principale per WP Import
+    this.csvFinalPath = path.join(this.outputDir, 'prodotti_latest.csv');
     this.csvTmpPath   = path.join(this.outputDir, 'prodotti_latest.tmp.csv');
     this.logPath      = path.join(this.outputDir, 'scraper.log');
-    this.checkpointPath = path.join(this.outputDir, 'scraper_checkpoint.json'); // 🆕 Checkpoint
+    this.checkpointPath = path.join(this.outputDir, 'scraper_checkpoint.json');
 
     this.imagesHostBaseUrl = process.env.IMAGES_BASE_URL || '';
     
-    // 🆕 Configurazione checkpoint
-    this.saveProgressEvery = 20; // Salva ogni 20 pagine
+    this.saveProgressEvery = 20;
     this.isShuttingDown = false;
 
     this.ensureDirs();
     
-    // Manteniamo l'intestazione CSV esistente per compatibilità
     this.csvWriter = createCsvWriter({
       path: this.csvTmpPath,
       encoding: 'utf8',
@@ -69,7 +67,6 @@ class ScraperWPAIFinal {
     try { fs.appendFileSync(this.logPath, line + '\n'); } catch (_) {}
   }
 
-  // 🆕 Salva checkpoint per recovery
   async saveCheckpoint(currentPage) {
     try {
       const checkpoint = {
@@ -86,14 +83,12 @@ class ScraperWPAIFinal {
     }
   }
 
-  // 🆕 Carica checkpoint esistente
   async loadCheckpoint() {
     try {
       if (fs.existsSync(this.checkpointPath)) {
         const data = await fsp.readFile(this.checkpointPath, 'utf8');
         const checkpoint = JSON.parse(data);
         
-        // Resume solo se < 24 ore
         const hoursOld = (Date.now() - checkpoint.timestamp) / (1000 * 60 * 60);
         if (hoursOld < 24) {
           this.log(`📂 Checkpoint trovato: resume da pagina ${checkpoint.currentPage}`);
@@ -109,7 +104,6 @@ class ScraperWPAIFinal {
     return null;
   }
 
-  // 🆕 Elimina checkpoint completato
   async clearCheckpoint() {
     try {
       if (fs.existsSync(this.checkpointPath)) {
@@ -193,11 +187,9 @@ class ScraperWPAIFinal {
     this.log(`Scraping: ${url}`);
     try {
       await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
-      // ⚠️ MODIFICA v2.0: Aumentato da 800ms a 1200ms per caricamento completo
-      await page.waitForTimeout(1200);
+      await page.waitForTimeout(2000);
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-      // ⚠️ MODIFICA v2.0: Aumentato da 600ms a 900ms per rendering lazy-load
-      await page.waitForTimeout(900);
+      await page.waitForTimeout(1500);
 
       const items = await page.evaluate(() => {
         const nodes = document.querySelectorAll('div[class*="prod"]');
@@ -206,7 +198,6 @@ class ScraperWPAIFinal {
         nodes.forEach((el, i) => {
           const txt = el.textContent || '';
           
-          // === ESTRAZIONE NOME (invariata dalla versione originale) ===
           let name = 'Prodotto';
           const productLink = el.querySelector('a[href*=".asp"]');
           if (productLink) {
@@ -253,7 +244,6 @@ class ScraperWPAIFinal {
             }
           }
 
-          // === ESTRAZIONE SKU (invariata) ===
           let sku = '';
           const skuMatch = txt.match(/(?:cod\.?\s*art\.?|sku|codice)[:.]?\s*([A-Z0-9\-_]+)/i);
           if (skuMatch) {
@@ -270,19 +260,15 @@ class ScraperWPAIFinal {
             sku = `AUTO_${Date.now()}_${i}`;
           }
 
-          // === ESTRAZIONE PREZZO MIGLIORATA ===
           let price = '';
           let originalPrice = '';
           
-          // Pattern 1: Cerca esplicitamente "€ XX,XX Sconto Y % € ZZ,ZZ"
           const discountPattern = txt.match(/€\s*(\d+(?:[,.]\d{1,2})?)\s*[Ss]conto\s*\d+\s*%\s*€\s*(\d+(?:[,.]\d{1,2})?)/);
           
           if (discountPattern) {
-            // Prezzo originale barrato e prezzo scontato
             originalPrice = discountPattern[1].replace(',', '.');
-            price = discountPattern[2].replace(',', '.'); // Prezzo finale scontato
+            price = discountPattern[2].replace(',', '.');
           } else {
-            // Pattern 2: Estrai TUTTI i prezzi e usa l'ULTIMO (quello finale IVA inclusa)
             const priceRegex = /€\s*(\d+(?:[,.]\d{1,2})?)/g;
             const pricesFound = [];
             let match;
@@ -291,10 +277,8 @@ class ScraperWPAIFinal {
             }
             
             if (pricesFound.length > 0) {
-              // L'ultimo prezzo è tipicamente quello finale IVA inclusa
               price = pricesFound[pricesFound.length - 1];
               
-              // Se ci sono 2+ prezzi e il primo è maggiore, probabilmente c'è uno sconto
               if (pricesFound.length >= 2) {
                 const firstPrice = parseFloat(pricesFound[0]);
                 const lastPrice = parseFloat(price);
@@ -303,7 +287,6 @@ class ScraperWPAIFinal {
                 }
               }
             } else {
-              // Fallback su altri pattern
               const altMatch = txt.match(/EUR\s*(\d+(?:[,.]\d{1,2})?)/i) ||
                               txt.match(/prezzo[:.]?\s*(\d+(?:[,.]\d{1,2})?)/i);
               if (altMatch) {
@@ -312,39 +295,31 @@ class ScraperWPAIFinal {
             }
           }
 
-          // === ESTRAZIONE STOCK MIGLIORATA - v2.0 ANTI-OVERSELLING ===
-          let stockQty = 1; // Default sicuro: 1 invece di 10
+          let stockQty = 1;
           
-          // Prima cerca il pattern specifico "Disponibile (X PZ)"
           const qtyParens = txt.match(/[Dd]isponibile\s*\(\s*(\d+)\s*PZ\s*\)/i);
           if (qtyParens) {
             stockQty = parseInt(qtyParens[1]);
           } else if (/non\s+disponibile|esaurito|sold\s*out/i.test(txt)) {
             stockQty = 0;
           } else if (/disponibile|available|in\s*stock/i.test(txt)) {
-            // ⚠️ MODIFICA v2.0: Se dice solo "Disponibile" senza quantità precisa, 
-            // usa 1 invece di 10 per evitare overselling
-            stockQty = 1; // ANTI-OVERSELLING: prudente invece di ottimista
+            stockQty = 1;
           } else {
             const qtyMatch = txt.match(/(?:pezzi|pz|qty|quantità)[:.]?\s*(\d+)/i);
             if (qtyMatch) {
               stockQty = parseInt(qtyMatch[1]);
             }
-            // Se non trova nessun dato, mantiene 1 (inizializzazione)
           }
 
-          // === ESTRAZIONE IMMAGINE (invariata) ===
           const img = el.querySelector('img[src*="Foto"], img[src*="foto"], img[src*=".jpg"], img[src*=".JPG"], img[src*=".png"]');
           const imageUrl = img ? (img.src || img.getAttribute('src')) : '';
 
-          // === ESTRAZIONE BRAND MIGLIORATA ===
           let brand = '';
           const brandMatch = txt.match(/(?:marca|brand|marchio|produttore)[:.]?\s*([A-Z][A-Za-z0-9\s&\-]+)/i);
           if (brandMatch) {
             brand = brandMatch[1].trim().split(/[\n\r€]/)[0].trim();
           }
           
-          // Cerca marche note se non trova brand generico
           if (!brand) {
             const knownBrands = ['Apple', 'Samsung', 'Huawei', 'Xiaomi', 'LG', 'Sony', 'Nokia', 
                                 'Motorola', 'Oppo', 'OnePlus', 'Google', 'Asus', 'Honor'];
@@ -357,40 +332,33 @@ class ScraperWPAIFinal {
             }
           }
 
-          // === ESTRAZIONE QUALITY ===
           let quality = '';
           const qualityMatch = txt.match(/(?:qualità|quality)[:.]?\s*(\w+)/i);
           if (qualityMatch) quality = qualityMatch[1].trim();
 
-          // === ESTRAZIONE PACKAGING ===
           let packaging = '';
           const packMatch = txt.match(/(?:confezione|packaging|package|conf\.)[:.]?\s*([^\n\r€]{3,50})/i);
           if (packMatch) {
             packaging = packMatch[1].trim();
           }
 
-          // === ESTRAZIONE COMPATIBILITÀ ===
           let compatibility = '';
-          // Pattern per iPhone, Samsung, etc.
           const compatMatch = txt.match(/(?:compatibil[eità]+|[Pp]er|[Ff]or)[:.]?\s*(iPhone\s+[^\s,€\n]+|Samsung\s+[^\s,€\n]+|Huawei\s+[^\s,€\n]+|Xiaomi\s+[^\s,€\n]+)/i);
           if (compatMatch) {
             compatibility = compatMatch[1].trim();
           } else {
-            // Cerca modelli specifici
             const modelMatch = txt.match(/\b(iPhone\s+\d+[^\s,]*|Galaxy\s+[A-Z]\d+|Mi\s+\d+|P\d+\s+Pro)\b/i);
             if (modelMatch) {
               compatibility = modelMatch[1].trim();
             }
           }
 
-          // === ESTRAZIONE COLORE ===
           let color = '';
           const colorMatch = txt.match(/(?:colore|color|colour)[:.]?\s*([A-Za-z]+|nero|bianco|rosso|blu|verde|giallo|grigio|oro|argento)/i);
           if (colorMatch) {
             color = colorMatch[1].trim();
           }
 
-          // === PULIZIA NOME FINALE ===
           if (name.includes(sku) && name.length > sku.length + 5) {
             name = name.replace(sku, '').trim();
           }
@@ -402,12 +370,11 @@ class ScraperWPAIFinal {
             name = typeMatch ? `${typeMatch[0]} ${sku}` : `Componente ${sku}`;
           }
 
-          // === OUTPUT CON DATI MIGLIORATI ===
           out.push({
             sku: sku.substring(0, 50),
             name: name.substring(0, 200),
-            regular_price: price, // Prezzo finale (eventualmente scontato)
-            original_price: originalPrice, // Prezzo originale se c'è sconto
+            regular_price: price,
+            original_price: originalPrice,
             stock_quantity: stockQty,
             image_url: imageUrl,
             brand: brand.substring(0, 50),
@@ -440,7 +407,6 @@ class ScraperWPAIFinal {
           }
         }
 
-        // Costruiamo tags intelligenti basati su compatibilità e tipo prodotto
         let tags = '';
         if (p.compatibility) {
           tags = `compatible-${p.compatibility.toLowerCase().replace(/\s+/g, '-')}`;
@@ -449,7 +415,6 @@ class ScraperWPAIFinal {
           tags = tags ? `${tags},${p.brand.toLowerCase()}` : p.brand.toLowerCase();
         }
 
-        // Short description migliorata
         let shortDesc = p.name;
         if (p.brand) shortDesc += ` - ${p.brand}`;
         if (p.compatibility) shortDesc += ` - Compatibile con ${p.compatibility}`;
@@ -473,7 +438,7 @@ class ScraperWPAIFinal {
           quality: this.cleanText(p.quality),
           packaging: this.cleanText(p.packaging),
           'attribute:pa_colore': this.cleanText(p.color),
-          'attribute:pa_modello': '', // Richiede pagina dettaglio
+          'attribute:pa_modello': '',
           'attribute:pa_compatibilita': this.cleanText(p.compatibility)
         });
       }
@@ -506,12 +471,11 @@ class ScraperWPAIFinal {
   }
 
   async scrapeAll(startUrl, maxPages = 20) {
-    // 🆕 Carica checkpoint se esiste
     const checkpoint = await this.loadCheckpoint();
     let startPage = 1;
     
     if (checkpoint) {
-      startPage = checkpoint.currentPage + 1; // Riprendi dalla pagina successiva
+      startPage = checkpoint.currentPage + 1;
       this.log(`🔄 Resume da pagina ${startPage} (checkpoint recuperato)`);
     }
 
@@ -537,40 +501,34 @@ class ScraperWPAIFinal {
       let url = startUrl;
       let n = 0;
       
-      // 🆕 Se resume, naviga alla pagina corretta
       if (checkpoint && startPage > 1) {
-        // Costruisci URL con numero pagina
         url = startUrl.includes('&pg=') 
           ? startUrl.replace(/pg=\d+/, `pg=${startPage}`)
           : `${startUrl}&pg=${startPage}`;
-        n = startPage - 1; // Parti dal conteggio corretto
+        n = startPage - 1;
         this.log(`Navigazione diretta a pagina ${startPage}`);
       }
       
       while (url && n < maxPages) {
-        // 🆕 Check shutdown flag
         if (this.isShuttingDown) {
           this.log('⚠️ Shutdown richiesto, salvataggio in corso...');
           break;
         }
 
         n++;
-        this.lastUrl = url; // 🆕 Traccia ultimo URL
+        this.lastUrl = url;
         this.log(`=== PAGINA ${n}/${maxPages} ===`);
         const next = await this.scrapePage(page, url);
         
-        // 🆕 Salva checkpoint ogni N pagine
         if (n % this.saveProgressEvery === 0) {
-          await this.saveCSV(); // Salva CSV parziale
-          await this.saveCheckpoint(n); // Salva posizione
+          await this.saveCSV();
+          await this.saveCheckpoint(n);
           this.log(`💾 Progress salvato: ${this.products.length} prodotti fino a pagina ${n}`);
         }
         
         if (next && next !== url) {
           url = next;
-          // ⚠️ MODIFICA v2.0: Rallentamento da 1-2s a 1.5-3s per maggiore precisione
-          // Questo porta il tempo totale da ~25min a ~35min per 200 pagine
-          await page.waitForTimeout(1500 + Math.random() * 1500);
+          await page.waitForTimeout(30000 + Math.random() * 30000);
         } else {
           this.log('Fine paginazione o limite raggiunto');
           break;
@@ -590,7 +548,6 @@ class ScraperWPAIFinal {
     }
     await this.csvWriter.writeRecords(this.products);
     
-    // Rename atomico
     try {
       await fsp.rename(this.csvTmpPath, this.csvFinalPath);
     } catch (err) {
@@ -600,7 +557,6 @@ class ScraperWPAIFinal {
     
     this.log(`CSV salvato: ${this.csvFinalPath} (${this.products.length} righe)`);
     
-    // Statistiche migliorate
     const withNames = this.products.filter(p => p.name && p.name !== 'Prodotto').length;
     const withPrices = this.products.filter(p => p.regular_price).length;
     const withBrands = this.products.filter(p => p.brand).length;
@@ -613,7 +569,6 @@ class ScraperWPAIFinal {
   }
 
   async run(maxPages = 20) {
-    // 🆕 Setup SIGTERM handler
     const gracefulShutdown = async (signal) => {
       if (this.isShuttingDown) return;
       this.isShuttingDown = true;
@@ -626,7 +581,6 @@ class ScraperWPAIFinal {
           this.log('✅ CSV salvato prima dello shutdown');
         }
         
-        // Non eliminiamo checkpoint così può resumare
         this.log('✅ Checkpoint mantenuto per resume');
         this.log('✅ Graceful shutdown completato');
         
@@ -644,21 +598,20 @@ class ScraperWPAIFinal {
     
     try {
       await this.scrapeAll(startUrl, maxPages);
-      await this.saveCSV(); // Salvataggio finale
-      await this.clearCheckpoint(); // 🆕 Elimina checkpoint se completato con successo
+      await this.saveCSV();
+      await this.clearCheckpoint();
       this.log('✅ Scraping completato con successo');
     } catch (err) {
       this.log(`❌ ERRORE FATALE: ${err.message}`);
       this.log(`Stack: ${err.stack}`);
       
-      // Salva comunque quello che hai
       if (this.products.length > 0) {
         this.log('⚠️ Tentativo salvataggio prodotti parziali...');
         await this.saveCSV();
         this.log('✅ CSV parziale salvato');
       }
       
-      throw err; // Propaga errore per exit code
+      throw err;
     }
   }
 }
