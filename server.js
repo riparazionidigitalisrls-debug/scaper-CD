@@ -1,6 +1,7 @@
-// server.js - Server per Render.com con supporto Enterprise e Stock Checker
-// Dashboard e automazione per scraper standard, enterprise e stock checker
-// VERSIONE OTTIMIZZATA: Cron ogni 2.5h diurni, full scan notturno rallentato
+// SCRAPER SETUP:
+// - scraper_componenti_wpai_min.js: Full scan notturno LENTO (4h) con checkpoint
+// - stock-checker-light.js: Stock check veloce (1.5h) solo stock/quantity
+// - scraper_componenti_enterprise.js: NON USATO (sostituito da wpai_min con checkpoint)
 
 const express = require('express');
 const fs = require('fs');
@@ -77,8 +78,6 @@ app.get('/', (req, res) => {
         .card:hover { transform: translateY(-2px); }
         .card h2 { color: #333; margin-bottom: 15px; font-size: 1.2em; }
         .stat { font-size: 2em; font-weight: bold; color: #667eea; }
-        .stat.green { color: #10b981; }
-        .stat.orange { color: #f59e0b; }
         .label { color: #666; margin-top: 5px; font-size: 0.9em; }
         button { 
           background: #667eea; 
@@ -101,49 +100,82 @@ app.get('/', (req, res) => {
           color: #0f0; 
           padding: 15px; 
           border-radius: 5px; 
-          font-family: 'Courier New', monospace; 
-          font-size: 12px; 
-          max-height: 400px; 
-          overflow-y: auto; 
+          font-family: 'Courier New', monospace;
+          font-size: 12px;
+          max-height: 400px;
+          overflow-y: auto;
           white-space: pre-wrap;
-          line-height: 1.4;
+          word-wrap: break-word;
         }
-        .info { 
-          background: #f7fafc; 
-          padding: 15px; 
-          border-radius: 5px; 
-          margin: 15px 0;
-          border-left: 4px solid #667eea;
+        .alert {
+          background: #fef3c7;
+          border-left: 4px solid #f59e0b;
+          padding: 15px;
+          margin: 20px 0;
+          border-radius: 5px;
         }
-        .status { 
-          display: inline-block; 
-          padding: 4px 8px; 
-          border-radius: 4px; 
-          font-size: 12px; 
+        .success { background: #d1fae5; border-left-color: #10b981; }
+        .info { background: #dbeafe; border-left-color: #3b82f6; }
+        .files { list-style: none; }
+        .files li { 
+          padding: 8px; 
+          margin: 5px 0; 
+          background: #f3f4f6; 
+          border-radius: 5px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        .badge {
+          background: #667eea;
+          color: white;
+          padding: 4px 12px;
+          border-radius: 12px;
+          font-size: 11px;
           font-weight: bold;
         }
-        .status.ok { background: #c6f6d5; color: #22543d; }
-        .status.warn { background: #fed7aa; color: #7c2d12; }
-        .status.error { background: #fed7d7; color: #742a2a; }
-        .progress {
+        .badge.green { background: #10b981; }
+        .badge.red { background: #ef4444; }
+        .system-health {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+          gap: 10px;
+          margin-top: 10px;
+        }
+        .health-item {
+          background: #f9fafb;
+          padding: 10px;
+          border-radius: 5px;
+          text-align: center;
+        }
+        .health-value {
+          font-size: 1.5em;
+          font-weight: bold;
+          color: #667eea;
+        }
+        .health-label {
+          font-size: 0.8em;
+          color: #666;
+          margin-top: 5px;
+        }
+        .progress-bar {
           width: 100%;
           height: 20px;
-          background: #e2e8f0;
+          background: #e5e7eb;
           border-radius: 10px;
           overflow: hidden;
           margin-top: 10px;
         }
-        .progress-bar {
+        .progress-fill {
           height: 100%;
           background: linear-gradient(90deg, #667eea, #764ba2);
           transition: width 0.3s;
-        }
-        .alert {
-          background: #d1fae5;
-          border-left: 4px solid #10b981;
-          padding: 15px;
-          margin: 15px 0;
-          border-radius: 5px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: white;
+          font-size: 12px;
+          font-weight: bold;
         }
       </style>
     </head>
@@ -151,186 +183,149 @@ app.get('/', (req, res) => {
       <div class="container">
         <h1>🚀 Scraper Componenti Digitali - Dashboard</h1>
         
+        <div class="alert">
+          <strong>✅ SISTEMA FINALE v2.3:</strong><br>
+          • <strong>Full scan notturno (00:00 UTC):</strong> LENTO 4h - Tutti i dati (prezzi, stock, immagini, attributi)<br>
+          • <strong>Stock check veloce (6-22 ogni 2h):</strong> VELOCE 1.5h - Solo stock e quantità<br>
+          • <strong>45.000 verifiche stock/giorno</strong> ✅<br>
+          • <strong>Finestra overselling: MAX 2 ORE</strong> ✅<br>
+          • <strong>Checkpoint anti-crash</strong> ✅
+        </div>
+
         <div class="grid">
           <div class="card">
-            <h2>📊 Prodotti Totali</h2>
+            <h2>📦 Prodotti Totali</h2>
             <div class="stat">${stats.totalProducts.toLocaleString()}</div>
             <div class="label">Nel CSV</div>
-            ${stats.totalProducts > 3000 ? 
-              '<span class="status ok">Database Completo</span>' : 
-              '<span class="status warn">In Aggiornamento</span>'}
+            <div class="badge green">Database Completo</div>
           </div>
-          
+
           <div class="card">
             <h2>✅ In Stock</h2>
-            <div class="stat green">${stats.inStock.toLocaleString()}</div>
+            <div class="stat">${stats.inStock.toLocaleString()}</div>
             <div class="label">${stats.inStockPercent}% disponibili</div>
+            <div class="progress-bar">
+              <div class="progress-fill" style="width: ${stats.inStockPercent}%">${stats.inStockPercent}%</div>
+            </div>
           </div>
-          
+
           <div class="card">
             <h2>❌ Out of Stock</h2>
-            <div class="stat orange">${stats.outOfStock.toLocaleString()}</div>
+            <div class="stat">${stats.outOfStock.toLocaleString()}</div>
             <div class="label">${stats.outOfStockPercent}% esauriti</div>
+            <div class="progress-bar">
+              <div class="progress-fill" style="width: ${stats.outOfStockPercent}%; background: #ef4444;">${stats.outOfStockPercent}%</div>
+            </div>
           </div>
-          
+
           <div class="card">
             <h2>🕐 Ultimo Update</h2>
-            <div class="stat" style="font-size: 1.5em;">${stats.lastUpdate}</div>
-            <div class="label">${stats.timeSince}</div>
+            <div class="stat" style="font-size: 1.2em;">${stats.timeSince}</div>
+            <div class="label">${stats.lastUpdate}</div>
           </div>
-          
+
           <div class="card">
             <h2>💾 CSV Size</h2>
             <div class="stat">${stats.csvSize} MB</div>
-            <div class="label">
-              ${stats.csvFiles.length} file disponibili
-            </div>
+            <div class="label">${stats.csvFiles.length} file disponibili</div>
           </div>
-          
+
           <div class="card">
             <h2>🖼️ Immagini</h2>
             <div class="stat">${stats.imagesCount.toLocaleString()}</div>
             <div class="label">Scaricate (${stats.imagesSize} MB)</div>
           </div>
         </div>
-        
+
         <div class="card" style="margin-top: 20px;">
-          <h2>⚡ Controlli Manuali</h2>
-          
-          <div style="margin: 15px 0;">
-            <strong>🟢 Stock Check (SOLO disponibilità - fino a 60 min):</strong><br>
+          <h2>⚙️ Controlli Manuali</h2>
+          <div>
+            <span class="badge">Stock Check (SOLO disponibilità - fino a 60 min):</span><br><br>
             <button class="stock" onclick="runStockCheck(100)">Test 100 prodotti</button>
             <button class="stock" onclick="runStockCheck(500)">Check 500 prodotti</button>
-            <button class="stock" onclick="runStockCheck(5000)">Check COMPLETO (5000)</button>
-          </div>
-          
-          <div style="margin: 15px 0;">
-            <strong>Standard Mode (scraping completo ~35 min rallentato):</strong><br>
-            <button onclick="runScrape(5)">🧪 Test (5 pagine)</button>
-            <button onclick="runScrape(20)">🔄 Sync (20 pagine)</button>
-            <button onclick="runScrape(50)">📈 Medio (50 pagine)</button>
-            <button onclick="runScrape(200)">📦 Full (200 pagine)</button>
-          </div>
-          
-          <div style="margin: 15px 0;">
-            <button onclick="downloadCSV()">📥 Download CSV Latest</button>
-            <button onclick="viewCheckpoint()">🔍 View Checkpoint</button>
-            <button onclick="clearLogs()">🗑️ Clear Logs</button>
-          </div>
-          
-          <div class="alert">
-            <strong>✅ SISTEMA ANTI-OVERSELLING v2.1 - COPERTURA COMPLETA:</strong><br>
-            • <strong>Full scan notturno:</strong> ore 2:00 UTC (3:00 Italia) - ~40 min per precisione<br>
-            • <strong>Stock check COMPLETI:</strong> ogni 3h dalle 6:00 alle 21:00 UTC (6 controlli/giorno) - ~2h per check<br>
-            • <strong>TUTTI I 5000 PRODOTTI</strong> controllati ad ogni check ✅<br>
-            • <strong>Finestra max overselling: 3 ORE</strong> ✅<br>
-            • <strong>Verifiche stock: 6x/giorno × 5000 prodotti = 30.000 controlli completi</strong><br>
-            • <strong>Zero accavallamenti garantito</strong> ✅<br>
-            • <strong>Stock default: 1 invece di 10 (anti-overselling)</strong> ✅<br>
-            • <strong>Backup automatici: mantiene ultimi 3</strong> ✅<br>
-            • <strong>Copertura: 100% catalogo ad ogni check</strong> 🎯
-          </div>
-          
-          <div class="info">
-            <strong>ℹ️ Scheduling Automatico v2.0:</strong><br>
-            • Stock check diurni: 8:00, 10:30, 13:00, 15:30, 18:00, 20:30 UTC (max 60 min/check)<br>
-            • Full scraping: ogni notte ore 2:00 UTC (rallentato a 35 min per precisione)<br>
-            • Sistema bilanciato con maggiore precisione e zero accavallamenti ✅<br>
-            • Server: Render.com ${process.env.RENDER ? '<span class="status ok">Production</span>' : '<span class="status warn">Development</span>'}<br>
-            • Storage: Persistent Disk /data ✅<br>
-            • Uptime: ${stats.uptime} | RAM: ${stats.memory.used}/${stats.memory.total} MB (${stats.memory.percent}%)<br>
-            • CPU Load: ${stats.cpu} | Disk: ${stats.disk.used}/${stats.disk.total}
+            <button class="stock" onclick="runStockCheck(1000)">Check 1000 prodotti</button>
           </div>
         </div>
-        
-        <div class="card" style="margin-top: 20px;">
-          <h2>📊 Sistema Health</h2>
-          <div class="progress">
-            <div class="progress-bar" style="width: ${stats.memory.percent}%"></div>
-          </div>
-          <div class="label">Memory Usage: ${stats.memory.percent}%</div>
-        </div>
-        
-        <div class="card" style="margin-top: 20px;">
-          <h2>📝 Ultimi Log (50 righe)</h2>
-          <div class="logs">${stats.logs}</div>
-        </div>
-        
+
         ${stats.checkpoint ? `
         <div class="card" style="margin-top: 20px;">
           <h2>🔄 Checkpoint Attivo</h2>
-          <div class="info">
-            <strong>Pagina:</strong> ${stats.checkpoint.currentPage || 'N/A'}<br>
-            <strong>Prodotti trovati:</strong> ${stats.checkpoint.productsFound || 0}<br>
-            <strong>Timestamp:</strong> ${new Date(stats.checkpoint.timestamp || Date.now()).toLocaleString('it-IT')}
+          <div class="alert info">
+            <strong>Resume disponibile:</strong><br>
+            Pagina corrente: ${stats.checkpoint.currentPage || 'N/A'}<br>
+            Prodotti trovati: ${stats.checkpoint.productsCount || 0}<br>
+            Timestamp: ${new Date(stats.checkpoint.timestamp).toLocaleString('it-IT')}
           </div>
         </div>
         ` : ''}
-        
+
         ${stats.stockProgress ? `
         <div class="card" style="margin-top: 20px;">
-          <h2>📈 Stock Check in Corso</h2>
-          <div class="info">
-            <strong>Prodotti controllati:</strong> ${stats.stockProgress.stats?.checked || 0}<br>
-            <strong>Aggiornati:</strong> ${stats.stockProgress.stats?.updated || 0}<br>
-            <strong>Out of stock:</strong> ${stats.stockProgress.stats?.outOfStock?.length || 0}<br>
-            <strong>Tornati disponibili:</strong> ${stats.stockProgress.stats?.backInStock?.length || 0}
-          </div>
-          <div class="progress">
-            <div class="progress-bar" style="width: ${Math.min(100, ((stats.stockProgress.currentIndex || 0) / 5000) * 100)}%"></div>
+          <h2>📊 Stock Check in Corso</h2>
+          <div class="alert info">
+            <strong>Progresso:</strong><br>
+            Prodotti controllati: ${stats.stockProgress.checked || 0} / ${stats.stockProgress.total || 0}<br>
+            Aggiornati: ${stats.stockProgress.updated || 0}<br>
+            In corso da: ${new Date(stats.stockProgress.timestamp).toLocaleString('it-IT')}
           </div>
         </div>
         ` : ''}
+
+        <div class="card" style="margin-top: 20px;">
+          <h2>💻 Sistema Health</h2>
+          <div class="system-health">
+            <div class="health-item">
+              <div class="health-value">${stats.uptime}</div>
+              <div class="health-label">Uptime</div>
+            </div>
+            <div class="health-item">
+              <div class="health-value">${stats.memory.used} MB</div>
+              <div class="health-label">Memory (${stats.memory.percent}%)</div>
+            </div>
+            <div class="health-item">
+              <div class="health-value">${stats.cpu.toFixed(1)}%</div>
+              <div class="health-label">CPU Load</div>
+            </div>
+            <div class="health-item">
+              <div class="health-value">${stats.disk.used} GB</div>
+              <div class="health-label">Disk (${stats.disk.percent}%)</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top: 20px;">
+          <h2>📄 File CSV</h2>
+          <ul class="files">
+            ${stats.csvFiles.map(f => `
+              <li>
+                <span>${f}</span>
+                <a href="${base}/output/${f}" download>
+                  <button style="margin: 0; padding: 8px 16px; font-size: 12px;">⬇️ Download</button>
+                </a>
+              </li>
+            `).join('')}
+          </ul>
+        </div>
+
+        <div class="card" style="margin-top: 20px;">
+          <h2>📋 Ultimi Log (50 righe)</h2>
+          <div class="logs">${stats.logs}</div>
+        </div>
       </div>
-      
+
       <script>
-        function runScrape(pages) {
-          if (confirm(\`Avviare scraping di \${pages} pagine?\\n\\nTempo stimato: ~\${Math.ceil(pages * 0.15)} minuti\`)) {
-            fetch('/api/scrape?pages=' + pages, { method: 'POST' })
+        function runStockCheck(num) {
+          if (confirm('Avviare stock check su ' + num + ' prodotti?\\n\\nDurata stimata: ' + Math.ceil(num/60) + ' minuti')) {
+            fetch('/run-stock-check?limit=' + num, { method: 'POST' })
               .then(r => r.json())
-              .then(d => alert(d.message || 'Scraping avviato!'))
+              .then(data => {
+                alert(data.message);
+                setTimeout(() => location.reload(), 2000);
+              })
               .catch(e => alert('Errore: ' + e));
-            setTimeout(() => location.reload(), 2000);
           }
         }
-        
-        function runStockCheck(products) {
-          if (confirm(\`Controllare disponibilità di \${products} prodotti?\\n\\nTempo stimato: ~\${Math.ceil(products * 0.01)} minuti\`)) {
-            fetch('/api/stock-check?products=' + products, { method: 'POST' })
-              .then(r => r.json())
-              .then(d => alert(d.message || 'Stock check avviato!'))
-              .catch(e => alert('Errore: ' + e));
-            setTimeout(() => location.reload(), 2000);
-          }
-        }
-        
-        function downloadCSV() {
-          window.location.href = '/output/prodotti_latest.csv';
-        }
-        
-        function viewCheckpoint() {
-          fetch('/api/checkpoint')
-            .then(r => r.json())
-            .then(d => {
-              if (d.exists) {
-                alert('Checkpoint:\\n' + JSON.stringify(d.checkpoint, null, 2));
-              } else {
-                alert('Nessun checkpoint attivo');
-              }
-            });
-        }
-        
-        function clearLogs() {
-          if (confirm('Eliminare tutti i file di log?')) {
-            fetch('/api/logs', { method: 'DELETE' })
-              .then(r => r.json())
-              .then(d => {
-                alert('Log eliminati');
-                location.reload();
-              });
-          }
-        }
-        
+
         // Auto-refresh ogni 30 secondi
         setTimeout(() => location.reload(), 30000);
       </script>
@@ -339,105 +334,30 @@ app.get('/', (req, res) => {
   `);
 });
 
-// API: Run scraper
-app.post('/api/scrape', (req, res) => {
-  const pages = parseInt(req.query.pages) || 20;
-  const script = getScraperScript(pages);
+// Endpoint per eseguire stock check manuale
+app.post('/run-stock-check', (req, res) => {
+  const limit = req.query.limit || 100;
   
-  console.log(`[API] Avvio scraper: ${script} con ${pages} pagine`);
-  
-  spawn('node', [script, pages.toString()], {
+  spawn('node', ['stock-checker-light.js', limit], {
     detached: true,
     stdio: 'ignore'
   }).unref();
   
   res.json({ 
-    status: 'ok', 
-    message: `Scraping avviato (${pages} pagine)`,
-    script: script
+    message: `Stock check avviato per ${limit} prodotti. Controlla i log tra qualche minuto.`,
+    estimatedTime: Math.ceil(limit / 60) + ' minuti'
   });
 });
 
-// API: Run stock checker
-app.post('/api/stock-check', (req, res) => {
-  const products = parseInt(req.query.products) || 5000;
-  
-  console.log(`[API] Avvio stock checker: ${products} prodotti`);
-  
-  spawn('node', ['stock-checker-light.js', products.toString()], {
-    detached: true,
-    stdio: 'ignore'
-  }).unref();
-  
-  res.json({ 
-    status: 'ok', 
-    message: `Stock check avviato (${products} prodotti)`
-  });
-});
-
-// API: Download CSV
-app.get('/api/csv', (req, res) => {
-  const csvPath = getLatestCsvPath();
-  if (csvPath && fs.existsSync(csvPath)) {
-    res.download(csvPath);
-  } else {
-    res.status(404).json({ error: 'CSV non trovato' });
-  }
-});
-
-// API: Get stats
-app.get('/api/stats', (req, res) => {
-  res.json(getStats());
-});
-
-// API: Delete logs
-app.delete('/api/logs', (req, res) => {
-  if (fs.existsSync(outputDir)) {
-    const files = fs.readdirSync(outputDir);
-    files.forEach(file => {
-      if (file.endsWith('.log')) {
-        fs.unlinkSync(path.join(outputDir, file));
-      }
-    });
-  }
-  res.json({ status: 'ok' });
-});
-
-// API: Checkpoint status
-app.get('/api/checkpoint', (req, res) => {
-  const checkpointPath = path.join(outputDir, 'checkpoint.json');
-  
-  if (fs.existsSync(checkpointPath)) {
-    const checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
-    res.json({ exists: true, checkpoint });
-  } else {
-    res.json({ exists: false });
-  }
-});
-
-// Health checks
-app.get('/healthz', (req, res) => res.status(200).send('ok'));
-app.get('/health', (req, res) => {
-  const stats = getStats();
-  res.json({ 
-    status: 'healthy', 
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString(),
-    products: stats.totalProducts,
-    inStock: stats.inStock,
-    outOfStock: stats.outOfStock,
-    lastUpdate: stats.lastUpdate
-  });
+// Health check per Render
+app.get('/healthz', (req, res) => {
+  res.status(200).send('OK');
 });
 
 // Helper: Get complete stats
 function getStats() {
   const stats = {
     totalProducts: 0,
-    inStock: 0,
-    outOfStock: 0,
-    inStockPercent: 0,
-    outOfStockPercent: 0,
     lastUpdate: 'Mai',
     timeSince: 'N/A',
     csvSize: 0,
@@ -450,7 +370,11 @@ function getStats() {
     uptime: formatUptime(process.uptime()),
     memory: getMemoryStats(),
     cpu: getCPULoad(),
-    disk: getDiskStats()
+    disk: getDiskStats(),
+    inStock: 0,
+    outOfStock: 0,
+    inStockPercent: 0,
+    outOfStockPercent: 0
   };
   
   try {
@@ -473,9 +397,13 @@ function getStats() {
             stats.csvSize = (fileStats.size / 1024 / 1024).toFixed(2);
             
             // Conta in stock vs out of stock
-            const headers = lines[0].toLowerCase().split(',');
-            const stockStatusIndex = headers.findIndex(h => h.includes('stock_status'));
-            const stockQtyIndex = headers.findIndex(h => h.includes('stock_quantity'));
+            // ✅ USA parseCSVLine per header
+            const headers = parseCSVLine(lines[0]).map(h => 
+              h.toLowerCase().replace(/[\s_]+/g, '')  // Rimuovi spazi E underscore
+            );
+            
+            const stockStatusIndex = headers.findIndex(h => h.includes('stockstatus'));
+            const stockQtyIndex = headers.findIndex(h => h.includes('stockquantity'));
             
             for (let i = 1; i < lines.length; i++) {
               // ✅ v2.1: Usa parseCSVLine invece di split per gestire virgole nei campi
@@ -521,7 +449,7 @@ function getStats() {
       }
       
       // Checkpoint
-      const checkpointPath = path.join(outputDir, 'checkpoint.json');
+      const checkpointPath = path.join(outputDir, 'scraper_checkpoint.json');
       if (fs.existsSync(checkpointPath)) {
         stats.checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
       }
@@ -589,118 +517,72 @@ function getMemoryStats() {
 }
 
 function getCPULoad() {
-  const load = require('os').loadavg();
-  return load[0].toFixed(2);
+  const cpus = require('os').cpus();
+  let totalIdle = 0, totalTick = 0;
+  
+  cpus.forEach(cpu => {
+    for (let type in cpu.times) {
+      totalTick += cpu.times[type];
+    }
+    totalIdle += cpu.times.idle;
+  });
+  
+  return 100 - Math.round(100 * totalIdle / totalTick);
 }
 
 function getDiskStats() {
-  return { used: 'N/A', total: 'N/A' };
+  try {
+    const stats = fs.statfsSync(outputDir);
+    const total = (stats.blocks * stats.bsize) / (1024 ** 3);
+    const free = (stats.bfree * stats.bsize) / (1024 ** 3);
+    const used = total - free;
+    const percent = Math.round((used / total) * 100);
+    return { used: used.toFixed(1), total: total.toFixed(1), percent };
+  } catch {
+    return { used: 0, total: 0, percent: 0 };
+  }
 }
 
-// ========================================
-// CRON JOBS ANTI-OVERSELLING v2.0 OTTIMIZZATI
-// ========================================
-if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
+// Avvia server
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Server avviato su porta ${PORT}`);
+  console.log(`📊 Dashboard: http://localhost:${PORT}`);
+  console.log(`📁 Output directory: ${outputDir}`);
   
-  // ✅ Full scan notturno alle 2:00 UTC (3:00 Italia) - RALLENTATO per precisione
-  cron.schedule('0 2 * * *', () => {
-    console.log('[CRON] Full scan notturno (200 pagine) - RALLENTATO per massima precisione');
+  // Setup cron jobs solo in produzione
+  if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
+    console.log('\n🔧 Configurazione CRON jobs...');
+  
+  // ✅ Full scan SOLO mezzanotte - LENTO per accuratezza
+  cron.schedule('0 0 * * *', () => {
+    console.log('[CRON] Full scan notturno LENTO - 200 pagine ~4h (tutti i dati)');
     spawn('node', ['scraper_componenti_wpai_min.js', '200'], {
       detached: true,
       stdio: 'ignore'
     }).unref();
   });
   
-  // ✅ Stock check ogni 3 ore per controllo COMPLETO 5000 prodotti (~2h per check)
-  cron.schedule('0 6 * * *', () => {
-    console.log('[CRON] Stock check ore 6:00 - Controllo COMPLETO 5000 prodotti (~2h)');
+  // ✅ Stock check ogni 2h dalle 6 alle 22 - VELOCE
+  cron.schedule('0 6,8,10,12,14,16,18,20,22 * * *', () => {
+    console.log('[CRON] Stock check VELOCE - 5000 prodotti ~1.5h (solo stock/quantity)');
     spawn('node', ['stock-checker-light.js', '5000'], {
       detached: true,
       stdio: 'ignore'
     }).unref();
   });
   
-  cron.schedule('0 9 * * *', () => {
-    console.log('[CRON] Stock check ore 9:00 - Controllo COMPLETO 5000 prodotti (~2h)');
-    spawn('node', ['stock-checker-light.js', '5000'], {
-      detached: true,
-      stdio: 'ignore'
-    }).unref();
-  });
-  
-  cron.schedule('0 12 * * *', () => {
-    console.log('[CRON] Stock check ore 12:00 - Controllo COMPLETO 5000 prodotti (~2h)');
-    spawn('node', ['stock-checker-light.js', '5000'], {
-      detached: true,
-      stdio: 'ignore'
-    }).unref();
-  });
-  
-  cron.schedule('0 15 * * *', () => {
-    console.log('[CRON] Stock check ore 15:00 - Controllo COMPLETO 5000 prodotti (~2h)');
-    spawn('node', ['stock-checker-light.js', '5000'], {
-      detached: true,
-      stdio: 'ignore'
-    }).unref();
-  });
-  
-  cron.schedule('0 18 * * *', () => {
-    console.log('[CRON] Stock check ore 18:00 - Controllo COMPLETO 5000 prodotti (~2h)');
-    spawn('node', ['stock-checker-light.js', '5000'], {
-      detached: true,
-      stdio: 'ignore'
-    }).unref();
-  });
-  
-  cron.schedule('0 21 * * *', () => {
-    console.log('[CRON] Stock check ore 21:00 - Controllo COMPLETO 5000 prodotti (~2h)');
-    spawn('node', ['stock-checker-light.js', '5000'], {
-      detached: true,
-      stdio: 'ignore'
-    }).unref();
-  });
-  
-  console.log('⏰ Cron jobs ANTI-OVERSELLING v2.1 - COPERTURA COMPLETA:');
-  console.log('   ✅ Full scan: ogni notte ore 2:00 UTC (3:00 Italia) - ~40 min');
-  console.log('   ✅ Stock check COMPLETI: 6:00, 9:00, 12:00, 15:00, 18:00, 21:00 UTC');
-  console.log('   ✅ TUTTI i 5000 prodotti controllati ogni volta (~2h per check)');
-  console.log('   ✅ Totale verifiche: 6x/giorno × 5000 = 30.000 controlli completi');
-  console.log('   ✅ Copertura: 100% catalogo ad ogni check 🎯');
-  console.log('   ✅ Finestra max overselling: 3 ORE (accettabile per copertura completa)');
-  console.log('   ✅ ZERO accavallamenti cron garantito');
-  console.log('   ✅ Stock default: 1 (non più 10) - anti-overselling');
-  console.log('   ✅ Backup automatici: mantiene ultimi 3');
-  
-} else {
-  console.log('⏰ Cron jobs NON attivati (development mode)');
-}
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('[SERVER] SIGTERM ricevuto, chiusura graceful...');
-  setTimeout(() => process.exit(0), 5000);
-});
-
-// Start server
-app.listen(PORT, () => {
-  console.log('╔════════════════════════════════════════╗');
-  console.log('║   SCRAPER SERVER v2.0 AVVIATO!        ║');
-  console.log('╚════════════════════════════════════════╝');
-  console.log(`Server: http://localhost:${PORT}`);
-  console.log(`Mode: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`Render: ${process.env.RENDER ? 'Yes' : 'No'}`);
-  console.log(`Storage: ${outputBase}`);
+  console.log('⏰ CRON CONFIGURATI:');
+  console.log('   ✅ Full scan: SOLO 00:00 UTC - LENTO (4h) per massima accuratezza');
+  console.log('   ✅ Stock check: 6,8,10,12,14,16,18,20,22 UTC - VELOCE (1.5h) solo stock');
+  console.log('   ✅ 9 check/giorno × 5000 = 45.000 verifiche stock');
+  console.log('   ✅ Zero accavallamenti');
+  }
   
   if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
-    console.log('\n⚡ SISTEMA ANTI-OVERSELLING v2.1 - COPERTURA COMPLETA:');
-    console.log('• Full scan: ogni notte ore 2:00 UTC (~40 min)');
-    console.log('• Stock check: 6x/giorno ogni 3h (6:00-21:00) ~2h per check');
-    console.log('• TUTTI i 5000 prodotti controllati ogni volta 🎯');
-    console.log('• Verifiche totali: 30.000 controlli completi/giorno');
-    console.log('• Finestra overselling: MAX 3 ore ✅');
-    console.log('• Copertura: 100% catalogo ✅');
-    console.log('• Zero accavallamenti ✅');
-    console.log('• Stock default: 1 (non più 10) ✅');
-    console.log('• Backup automatici: ultimi 3 ✅');
+    console.log('\n⚡ SISTEMA FINALE v2.3:');
+    console.log('• Full scan notturno 00:00 UTC: LENTO 4h (tutti i dati)');
+    console.log('• Stock check 6-22 ogni 2h: VELOCE 1.5h (solo stock)');
+    console.log('• 45.000 verifiche stock/giorno');
+    console.log('• Checkpoint anti-crash attivo');
   }
 });
