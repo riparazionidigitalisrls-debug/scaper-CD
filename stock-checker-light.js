@@ -22,13 +22,13 @@ class StockCheckerLight {
     // URL base
     this.baseUrl = 'https://www.componentidigitali.com';
     
-    // CONFIGURAZIONE ULTRA-RAPIDA (rispetta robots.txt)
+    // CONFIGURAZIONE OTTIMIZZATA v2.1 - TUTTI I 5000 PRODOTTI
     this.config = {
-      crawlDelay: 300,           // 0,3 secondi tra richieste (più dei 10 richiesti)
-      batchSize: 150,               // 150 prodotti per batch
-      pauseBetweenBatches: 5000, // o,5 minuti tra batch
-      maxProductsPerSession: 5000, // Max prodotti per sessione (20min )
-      sessionTimeout: 1800000,    // 8 ore max per sessione
+      crawlDelay: 200,           // ⚡ 0.2 secondi (veloce ma sicuro)
+      batchSize: 250,            // Batch grandi per ridurre pause
+      pauseBetweenBatches: 1000, // 1 secondo tra batch
+      maxProductsPerSession: 5000, // ✅ TUTTI I PRODOTTI
+      sessionTimeout: 7200000,    // 2 ore max per sicurezza
       
       // User agents rotation
       userAgents: [
@@ -41,11 +41,11 @@ class StockCheckerLight {
       
       // Retry configuration
       maxRetries: 2,
-      retryDelay: 30000, // 30 secondi prima di riprovare
+      retryDelay: 30000,
       
       // Safety features
-      stopOnErrors: 5,  // Ferma dopo 5 errori consecutivi
-      randomizeOrder: true, // Randomizza ordine prodotti
+      stopOnErrors: 5,
+      randomizeOrder: true,
     };
     
     // Stato
@@ -90,6 +90,26 @@ class StockCheckerLight {
       // Backup del CSV originale
       await fsp.copyFile(this.csvLatestPath, this.csvBackupPath);
       this.log(`Backup creato: ${this.csvBackupPath}`);
+      
+      // 🆕 v2.0: Pulisci backup vecchi (mantieni solo ultimi 3)
+      try {
+        const backupFiles = fs.readdirSync(this.outputDir)
+          .filter(f => f.startsWith('backup_') && f.endsWith('.csv'))
+          .map(f => ({
+            name: f,
+            time: fs.statSync(path.join(this.outputDir, f)).mtime.getTime()
+          }))
+          .sort((a, b) => b.time - a.time); // Ordina per più recente
+        
+        if (backupFiles.length > 3) {
+          for (let i = 3; i < backupFiles.length; i++) {
+            await fsp.unlink(path.join(this.outputDir, backupFiles[i].name));
+            this.log(`Backup vecchio eliminato: ${backupFiles[i].name}`);
+          }
+        }
+      } catch (e) {
+        this.log(`Avviso: impossibile pulire backup vecchi: ${e.message}`, 'WARN');
+      }
       
       // Leggi e parsa CSV
       const csvContent = await fsp.readFile(this.csvLatestPath, 'utf8');
@@ -223,8 +243,8 @@ class StockCheckerLight {
         timeout: 30000 
       });
       
-      // Aspetta un po' per il caricamento
-      await page.waitForTimeout(400);
+      // ⚡ v2.1: Minimo essenziale per 5000 prodotti
+      await page.waitForTimeout(200);
       
       // Estrai info disponibilità
       const stockInfo = await page.evaluate((targetSku) => {
@@ -389,15 +409,16 @@ class StockCheckerLight {
           }
         }
         
-        // Delay tra prodotti solo se non siamo all'ultimo
+        // Delay tra prodotti
         if (this.currentIndex < this.products.length && this.stats.checked < productsToCheck) {
-          const delay = this.config.crawlDelay + Math.random() * 200;
+          // ⚡ v2.1: Delay minimo ma sicuro per 5000 prodotti in ~90 min
+          const delay = this.config.crawlDelay + Math.random() * 100; // 200-300ms
           await new Promise(resolve => setTimeout(resolve, delay));
         }
         
         // Check timeout sessione
         if (Date.now() - sessionStart > this.config.sessionTimeout) {
-          this.log('⏰ Timeout sessione raggiunto (8 ore). Salvataggio e uscita.');
+          this.log('⏰ Timeout sessione raggiunto (2 ore). Salvataggio e uscita.');
           break;
         }
         
