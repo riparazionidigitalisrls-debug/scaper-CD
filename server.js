@@ -478,7 +478,8 @@ function getStats() {
             const stockQtyIndex = headers.findIndex(h => h.includes('stock_quantity'));
             
             for (let i = 1; i < lines.length; i++) {
-              const cols = lines[i].split(',');
+              // ✅ v2.1: Usa parseCSVLine invece di split per gestire virgole nei campi
+              const cols = parseCSVLine(lines[i]);
               const stockStatus = cols[stockStatusIndex]?.toLowerCase() || '';
               const stockQty = parseInt(cols[stockQtyIndex]) || 0;
               
@@ -548,6 +549,28 @@ function getStats() {
 }
 
 // Helper functions
+function parseCSVLine(line) {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+  
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  
+  result.push(current.trim());
+  return result;
+}
+
 function formatUptime(seconds) {
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);
