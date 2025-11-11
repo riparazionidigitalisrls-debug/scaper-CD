@@ -467,7 +467,7 @@ class ScraperWPAINoLock {
         
         if (next && next !== url) {
           url = next;
-          const delay = 30000 + Math.random() * 30000; // 30-60s
+          const delay = 5000 + Math.random() * 5000; // 5-10s (ottimizzato!)
           this.log(`⏳ Pausa ${Math.round(delay/1000)}s prima prossima pagina...`, 'DEBUG');
           await page.waitForTimeout(delay);
         } else {
