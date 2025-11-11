@@ -1,5 +1,5 @@
-// scraper_componenti_wpai_min.js v2.5
-// Versione finale ottimizzata con sistema di LOCK completo
+// scraper_componenti_wpai_min.js v3.0 NO LOCK
+// Versione senza sistema di lock, con logging avanzato verso server
 
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -8,24 +8,27 @@ const path = require('path');
 const https = require('https');
 const createCsvWriter = require('csv-writer').createObjectCsvWriter;
 
-class ScraperWPAIFinal {
+class ScraperWPAINoLock {
   constructor() {
     this.baseUrl = 'https://www.componentidigitali.com';
 
     const baseDir = process.env.DATA_DIR || (process.env.RENDER ? '/data' : '.');
     this.outputDir = path.join(baseDir, 'output');
     this.imagesDir = path.join(this.outputDir, 'images');
+    this.logsDir = path.join(baseDir, 'logs');
 
     this.csvFinalPath = path.join(this.outputDir, 'prodotti_latest.csv');
     this.csvTmpPath   = path.join(this.outputDir, 'prodotti_latest.tmp.csv');
-    this.logPath      = path.join(this.outputDir, 'scraper.log');
-    this.checkpointPath = path.join(this.outputDir, 'scraper_checkpoint.json');
-    this.lockPath = path.join(this.outputDir, 'scraper.lock');
+    this.logPath      = path.join(this.logsDir, 'scraper.log');
+    this.progressPath = path.join(this.outputDir, 'scraper_progress.json');
+    this.eventsPath   = path.join(this.logsDir, 'scraper_events.json');
 
     this.imagesHostBaseUrl = process.env.IMAGES_BASE_URL || '';
     
-    this.saveProgressEvery = 20;
+    this.saveProgressEvery = 10; // Più frequente per dashboard
     this.isShuttingDown = false;
+    this.startTime = Date.now();
+    this.sessionId = `scraper_${Date.now()}`;
 
     this.ensureDirs();
     
@@ -54,108 +57,111 @@ class ScraperWPAIFinal {
 
     this.products = [];
     this.seen = new Set();
+    this.stats = {
+      pagesProcessed: 0,
+      productsFound: 0,
+      imagesDownloaded: 0,
+      errors: 0,
+      currentPage: 0,
+      startTime: Date.now(),
+      lastUpdate: Date.now()
+    };
   }
 
   ensureDirs() {
     if (!fs.existsSync(this.outputDir)) fs.mkdirSync(this.outputDir, { recursive: true });
     if (!fs.existsSync(this.imagesDir)) fs.mkdirSync(this.imagesDir, { recursive: true });
+    if (!fs.existsSync(this.logsDir)) fs.mkdirSync(this.logsDir, { recursive: true });
   }
 
-  log(m) {
-    const line = `[${new Date().toISOString()}] ${m}`;
+  log(m, level = 'INFO', event = null) {
+    const timestamp = new Date().toISOString();
+    const line = `[${timestamp}] [${level}] ${m}`;
     console.log(line);
-    try { fs.appendFileSync(this.logPath, line + '\n'); } catch (_) {}
-  }
+    
+    try { 
+      fs.appendFileSync(this.logPath, line + '\n'); 
+    } catch (_) {}
 
-  // SISTEMA DI LOCK
-  async acquireLock() {
-    try {
-      if (fs.existsSync(this.lockPath)) {
-        const lockData = JSON.parse(fs.readFileSync(this.lockPath, 'utf8'));
-        const lockAge = Date.now() - lockData.timestamp;
-        
-        // Lock stale dopo 4 ore
-        if (lockAge > 14400000) {
-          this.log('⚠️ Lock file stale (>4h), lo rimuovo');
-          fs.unlinkSync(this.lockPath);
-        } else {
-          this.log('❌ Altro scraper in corso, uscita');
-          this.log(`Lock da PID ${lockData.pid} alle ${new Date(lockData.timestamp).toLocaleString()}`);
-          return false;
-        }
-      }
-      
-      const lockData = {
-        pid: process.pid,
-        timestamp: Date.now(),
-        startedAt: new Date().toISOString()
-      };
-      
-      fs.writeFileSync(this.lockPath, JSON.stringify(lockData, null, 2));
-      this.log(`✅ Lock acquisito (PID ${process.pid})`);
-      return true;
-    } catch (e) {
-      this.log(`Errore lock: ${e.message}`);
-      return false;
+    // Log eventi importanti per dashboard
+    if (event || level === 'ERROR' || level === 'WARN' || level === 'SUCCESS') {
+      this.logEvent({
+        timestamp,
+        level,
+        message: m,
+        event: event || 'log',
+        sessionId: this.sessionId,
+        stats: {...this.stats}
+      });
     }
   }
 
-  async releaseLock() {
+  logEvent(entry) {
     try {
-      if (fs.existsSync(this.lockPath)) {
-        fs.unlinkSync(this.lockPath);
-        this.log('✅ Lock rilasciato');
+      let events = [];
+      if (fs.existsSync(this.eventsPath)) {
+        const content = fs.readFileSync(this.eventsPath, 'utf8');
+        events = JSON.parse(content || '[]');
       }
+      
+      events.unshift(entry);
+      events = events.slice(0, 500); // Mantieni ultimi 500 eventi
+      
+      fs.writeFileSync(this.eventsPath, JSON.stringify(events, null, 2));
     } catch (e) {
-      this.log(`Errore rilascio lock: ${e.message}`);
+      // Silent fail
     }
   }
 
-  async saveCheckpoint(currentPage) {
+  async saveProgress(currentPage, status = 'running') {
     try {
-      const checkpoint = {
+      const progress = {
+        sessionId: this.sessionId,
         currentPage,
+        status,
+        stats: this.stats,
         productsCount: this.products.length,
         seenCount: this.seen.size,
         timestamp: Date.now(),
+        duration: Date.now() - this.startTime,
         lastUrl: this.lastUrl || null
       };
-      await fsp.writeFile(this.checkpointPath, JSON.stringify(checkpoint, null, 2));
-      this.log(`✓ Checkpoint salvato: pagina ${currentPage}, ${this.products.length} prodotti`);
+      await fsp.writeFile(this.progressPath, JSON.stringify(progress, null, 2));
+      this.log(`✓ Progress salvato: pagina ${currentPage}, ${this.products.length} prodotti`, 'DEBUG', 'progress_saved');
     } catch (e) {
-      this.log(`Errore checkpoint: ${e.message}`);
+      this.log(`Errore progress: ${e.message}`, 'ERROR');
     }
   }
 
-  async loadCheckpoint() {
+  async loadProgress() {
     try {
-      if (fs.existsSync(this.checkpointPath)) {
-        const data = await fsp.readFile(this.checkpointPath, 'utf8');
-        const checkpoint = JSON.parse(data);
+      if (fs.existsSync(this.progressPath)) {
+        const data = await fsp.readFile(this.progressPath, 'utf8');
+        const progress = JSON.parse(data);
         
-        const hoursOld = (Date.now() - checkpoint.timestamp) / (1000 * 60 * 60);
-        if (hoursOld < 24) {
-          this.log(`📂 Resume da pagina ${checkpoint.currentPage}`);
-          return checkpoint;
+        const hoursOld = (Date.now() - progress.timestamp) / (1000 * 60 * 60);
+        if (hoursOld < 24 && progress.status !== 'completed') {
+          this.log(`📂 Progress trovato: pagina ${progress.currentPage}`, 'INFO', 'progress_found');
+          return progress;
         } else {
-          this.log(`Checkpoint vecchio (${hoursOld.toFixed(1)}h), ignoro`);
-          await fsp.unlink(this.checkpointPath);
+          this.log(`Progress vecchio o completato, ignoro`, 'DEBUG');
+          await fsp.unlink(this.progressPath);
         }
       }
     } catch (e) {
-      this.log(`Errore caricamento checkpoint: ${e.message}`);
+      this.log(`Errore caricamento progress: ${e.message}`, 'WARN');
     }
     return null;
   }
 
-  async clearCheckpoint() {
+  async clearProgress() {
     try {
-      if (fs.existsSync(this.checkpointPath)) {
-        await fsp.unlink(this.checkpointPath);
-        this.log('✓ Checkpoint eliminato (completato con successo)');
+      if (fs.existsSync(this.progressPath)) {
+        await fsp.unlink(this.progressPath);
+        this.log('✓ Progress eliminato (completato)', 'DEBUG');
       }
     } catch (e) {
-      this.log(`Errore eliminazione checkpoint: ${e.message}`);
+      this.log(`Errore eliminazione progress: ${e.message}`, 'WARN');
     }
   }
 
@@ -212,7 +218,10 @@ class ScraperWPAIFinal {
 
   async downloadImageCandidates(imageUrl, filename) {
     for (const c of this.buildImageCandidates(imageUrl)) {
-      if (await this.downloadImage(c, filename)) return true;
+      if (await this.downloadImage(c, filename)) {
+        this.stats.imagesDownloaded++;
+        return true;
+      }
     }
     return false;
   }
@@ -228,7 +237,7 @@ class ScraperWPAIFinal {
   }
 
   async scrapePage(page, url) {
-    this.log(`Scraping: ${url}`);
+    this.log(`🔍 Scraping: ${url}`, 'INFO', 'page_start');
     try {
       await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
       await page.waitForTimeout(2000);
@@ -241,200 +250,43 @@ class ScraperWPAIFinal {
         
         nodes.forEach((el, i) => {
           const txt = el.textContent || '';
-          
-          let name = 'Prodotto';
-          const productLink = el.querySelector('a[href*=".asp"]');
-          if (productLink) {
-            const linkText = productLink.textContent.trim();
-            if (linkText && linkText.length > 3 && !/^\d+$/.test(linkText)) {
-              name = linkText;
-            }
-            if (name === 'Prodotto' && productLink.title) {
-              name = productLink.title.trim();
-            }
-          }
-          
-          if (name === 'Prodotto') {
-            const heading = el.querySelector('h2, h3, h4, .product-title, .prod-title, .nome-prodotto');
-            if (heading) {
-              const headingText = heading.textContent.trim();
-              if (headingText && headingText.length > 3) {
-                name = headingText;
-              }
-            }
-          }
-          
-          if (name === 'Prodotto') {
-            const titleEl = el.querySelector('[class*="title"], [class*="nome"], [class*="name"], .descrizione');
-            if (titleEl) {
-              const titleText = titleEl.textContent.trim();
-              if (titleText && titleText.length > 3 && !titleText.match(/^(cod|sku|art)/i)) {
-                name = titleText;
-              }
-            }
-          }
-          
-          if (name === 'Prodotto') {
-            const descMatch = txt.match(/(?:descrizione|prodotto|articolo)[:.]?\s*([^€\n]{10,100})/i);
-            if (descMatch) {
-              name = descMatch[1].trim();
-            }
-          }
-          
-          if (name === 'Prodotto') {
-            const img = el.querySelector('img[alt]');
-            if (img && img.alt && img.alt.length > 3) {
-              name = img.alt.trim();
-            }
-          }
+          const skuMatch = txt.match(/Codice:\s*([A-Z0-9\-]+)/i);
+          const nameMatch = txt.match(/(.+?)(?:Codice:|$)/);
+          const priceMatch = txt.match(/(\d+[.,]\d+)\s*€/);
+          const stockMatch = txt.match(/(\d+)\s*(?:pz|pezzi|disponibili)/i);
+          const brandMatch = txt.match(/Marca:\s*([^\n]+)/i);
+          const qualityMatch = txt.match(/Qualità:\s*([^\n]+)/i);
+          const packMatch = txt.match(/Imballo:\s*([^\n]+)/i);
+          const colorMatch = txt.match(/Colore:\s*([^\n]+)/i);
+          const compatMatch = txt.match(/Compatibile:\s*([^\n]+)/i);
+          const origPriceMatch = txt.match(/€\s*(\d+[.,]\d+).*?€\s*(\d+[.,]\d+)/);
 
-          let sku = '';
-          const skuMatch = txt.match(/(?:cod\.?\s*art\.?|sku|codice)[:.]?\s*([A-Z0-9\-_]+)/i);
+          const imgEl = el.querySelector('img[src*=".JPG"]');
+          const imgUrl = imgEl ? imgEl.getAttribute('src') : null;
+
           if (skuMatch) {
-            sku = skuMatch[1].trim();
-          } else {
-            const skuEl = el.querySelector('[data-sku], [data-code], .sku, .codice');
-            if (skuEl) {
-              sku = skuEl.getAttribute('data-sku') ||
-                    skuEl.getAttribute('data-code') ||
-                    skuEl.textContent.trim();
-            }
+            out.push({
+              index: i,
+              sku: skuMatch[1].trim(),
+              name: nameMatch ? nameMatch[1].trim() : 'Prodotto',
+              regular_price: priceMatch ? priceMatch[1].replace(',', '.') : '',
+              stock_quantity: stockMatch ? parseInt(stockMatch[1]) : 10,
+              brand: brandMatch ? brandMatch[1].trim() : '',
+              quality: qualityMatch ? qualityMatch[1].trim() : '',
+              packaging: packMatch ? packMatch[1].trim() : '',
+              color: colorMatch ? colorMatch[1].trim() : '',
+              compatibility: compatMatch ? compatMatch[1].trim() : '',
+              original_price: origPriceMatch ? origPriceMatch[1].replace(',', '.') : null,
+              image_url: imgUrl
+            });
           }
-          if (!sku) {
-            sku = `AUTO_${Date.now()}_${i}`;
-          }
-
-          let price = '';
-          let originalPrice = '';
-          
-          const discountPattern = txt.match(/€\s*(\d+(?:[,.]\d{1,2})?)\s*[Ss]conto\s*\d+\s*%\s*€\s*(\d+(?:[,.]\d{1,2})?)/);
-          
-          if (discountPattern) {
-            originalPrice = discountPattern[1].replace(',', '.');
-            price = discountPattern[2].replace(',', '.');
-          } else {
-            const priceRegex = /€\s*(\d+(?:[,.]\d{1,2})?)/g;
-            const pricesFound = [];
-            let match;
-            while ((match = priceRegex.exec(txt)) !== null) {
-              if (match[1]) pricesFound.push(match[1].replace(',', '.'));
-            }
-            
-            if (pricesFound.length > 0) {
-              price = pricesFound[pricesFound.length - 1];
-              
-              if (pricesFound.length >= 2) {
-                const firstPrice = parseFloat(pricesFound[0]);
-                const lastPrice = parseFloat(price);
-                if (firstPrice > lastPrice) {
-                  originalPrice = pricesFound[0];
-                }
-              }
-            } else {
-              const altMatch = txt.match(/EUR\s*(\d+(?:[,.]\d{1,2})?)/i) ||
-                              txt.match(/prezzo[:.]?\s*(\d+(?:[,.]\d{1,2})?)/i);
-              if (altMatch) {
-                price = altMatch[1].replace(',', '.');
-              }
-            }
-          }
-
-          let stockQty = 1;
-          
-          const qtyParens = txt.match(/[Dd]isponibile\s*\(\s*(\d+)\s*PZ\s*\)/i);
-          if (qtyParens) {
-            stockQty = parseInt(qtyParens[1]);
-          } else if (/non\s+disponibile|esaurito|sold\s*out/i.test(txt)) {
-            stockQty = 0;
-          } else if (/disponibile|available|in\s*stock/i.test(txt)) {
-            stockQty = 1;
-          } else {
-            const qtyMatch = txt.match(/(?:pezzi|pz|qty|quantità)[:.]?\s*(\d+)/i);
-            if (qtyMatch) {
-              stockQty = parseInt(qtyMatch[1]);
-            }
-          }
-
-          const img = el.querySelector('img[src*="Foto"], img[src*="foto"], img[src*=".jpg"], img[src*=".JPG"], img[src*=".png"]');
-          const imageUrl = img ? (img.src || img.getAttribute('src')) : '';
-
-          let brand = '';
-          const brandMatch = txt.match(/(?:marca|brand|marchio|produttore)[:.]?\s*([A-Z][A-Za-z0-9\s&\-]+)/i);
-          if (brandMatch) {
-            brand = brandMatch[1].trim().split(/[\n\r€]/)[0].trim();
-          }
-          
-          if (!brand) {
-            const knownBrands = ['Apple', 'Samsung', 'Huawei', 'Xiaomi', 'LG', 'Sony', 'Nokia', 
-                                'Motorola', 'Oppo', 'OnePlus', 'Google', 'Asus', 'Honor'];
-            for (const b of knownBrands) {
-              const brandRegex = new RegExp(`\\b${b}\\b`, 'i');
-              if (brandRegex.test(txt)) {
-                brand = b;
-                break;
-              }
-            }
-          }
-
-          let quality = '';
-          const qualityMatch = txt.match(/(?:qualità|quality)[:.]?\s*(\w+)/i);
-          if (qualityMatch) quality = qualityMatch[1].trim();
-
-          let packaging = '';
-          const packMatch = txt.match(/(?:confezione|packaging|package|conf\.)[:.]?\s*([^\n\r€]{3,50})/i);
-          if (packMatch) {
-            packaging = packMatch[1].trim();
-          }
-
-          let compatibility = '';
-          const compatMatch = txt.match(/(?:compatibil[eità]+|[Pp]er|[Ff]or)[:.]?\s*(iPhone\s+[^\s,€\n]+|Samsung\s+[^\s,€\n]+|Huawei\s+[^\s,€\n]+|Xiaomi\s+[^\s,€\n]+)/i);
-          if (compatMatch) {
-            compatibility = compatMatch[1].trim();
-          } else {
-            const modelMatch = txt.match(/\b(iPhone\s+\d+[^\s,]*|Galaxy\s+[A-Z]\d+|Mi\s+\d+|P\d+\s+Pro)\b/i);
-            if (modelMatch) {
-              compatibility = modelMatch[1].trim();
-            }
-          }
-
-          let color = '';
-          const colorMatch = txt.match(/(?:colore|color|colour)[:.]?\s*([A-Za-z]+|nero|bianco|rosso|blu|verde|giallo|grigio|oro|argento)/i);
-          if (colorMatch) {
-            color = colorMatch[1].trim();
-          }
-
-          if (name.includes(sku) && name.length > sku.length + 5) {
-            name = name.replace(sku, '').trim();
-          }
-          name = name.replace(/€\s*\d+[,.]?\d*/, '').trim();
-          name = name.replace(/[^\w\s\-\(\)\/&.,àèéìòù]/gi, ' ').replace(/\s+/g, ' ').trim();
-          
-          if (name === 'Prodotto' || name.length < 5) {
-            const typeMatch = txt.match(/(?:display|lcd|batteria|battery|cover|cable|cavo|vetro|glass|flex)/i);
-            name = typeMatch ? `${typeMatch[0]} ${sku}` : `Componente ${sku}`;
-          }
-
-          out.push({
-            sku: sku.substring(0, 50),
-            name: name.substring(0, 200),
-            regular_price: price,
-            original_price: originalPrice,
-            stock_quantity: stockQty,
-            image_url: imageUrl,
-            brand: brand.substring(0, 50),
-            quality: quality.substring(0, 30),
-            packaging: packaging.substring(0, 100),
-            compatibility: compatibility.substring(0, 100),
-            color: color.substring(0, 30)
-          });
         });
         
         return out;
       });
 
-      if (items.length > 0) {
-        this.log(`Trovati ${items.length} prodotti. Esempio: SKU=${items[0].sku}, Name="${items[0].name}", Price=${items[0].regular_price}`);
-      }
+      this.log(`✓ Trovati ${items.length} prodotti in pagina`, 'INFO', 'products_found');
+      this.stats.productsFound += items.length;
 
       for (const p of items) {
         if (this.seen.has(p.sku)) continue;
@@ -509,19 +361,23 @@ class ScraperWPAIFinal {
 
       return nextUrl;
     } catch (e) {
-      this.log(`Errore scrape: ${e.message}`);
+      this.stats.errors++;
+      this.log(`❌ Errore scrape: ${e.message}`, 'ERROR', 'scrape_error');
       return null;
     }
   }
 
   async scrapeAll(startUrl, maxPages = 20) {
-    const checkpoint = await this.loadCheckpoint();
+    const progress = await this.loadProgress();
     let startPage = 1;
     
-    if (checkpoint) {
-      startPage = checkpoint.currentPage + 1;
-      this.log(`🔄 Resume da pagina ${startPage}`);
+    if (progress) {
+      startPage = progress.currentPage + 1;
+      this.log(`🔄 Resume da pagina ${startPage}`, 'INFO', 'resume');
     }
+
+    this.log(`🚀 AVVIO SCRAPING - Session: ${this.sessionId}`, 'SUCCESS', 'scraping_start');
+    this.log(`📊 Target: ${maxPages} pagine`, 'INFO');
 
     const browser = await chromium.launch({
       headless: true,
@@ -533,6 +389,7 @@ class ScraperWPAIFinal {
         '--single-process'
       ]
     });
+    
     try {
       const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -540,56 +397,73 @@ class ScraperWPAIFinal {
       const page = await context.newPage();
 
       const version = await browser.version();
-      this.log(`Chromium ${version} avviato`);
+      this.log(`✓ Chromium ${version} avviato`, 'INFO', 'browser_started');
       
       let url = startUrl;
       let n = 0;
       
-      if (checkpoint && startPage > 1) {
+      if (progress && startPage > 1) {
         url = startUrl.includes('&pg=') 
           ? startUrl.replace(/pg=\d+/, `pg=${startPage}`)
           : `${startUrl}&pg=${startPage}`;
         n = startPage - 1;
-        this.log(`Navigazione a pagina ${startPage}`);
+        this.log(`→ Navigazione a pagina ${startPage}`, 'INFO');
       }
       
       while (url && n < maxPages) {
         if (this.isShuttingDown) {
-          this.log('⚠️ Shutdown richiesto');
+          this.log('⚠️ Shutdown richiesto', 'WARN', 'shutdown');
           break;
         }
 
         n++;
+        this.stats.currentPage = n;
+        this.stats.pagesProcessed = n;
+        this.stats.lastUpdate = Date.now();
         this.lastUrl = url;
-        this.log(`=== PAGINA ${n}/${maxPages} ===`);
+        
+        this.log(`\n${'='.repeat(50)}`, 'INFO');
+        this.log(`📄 PAGINA ${n}/${maxPages}`, 'SUCCESS', 'page_progress');
+        this.log(`${'='.repeat(50)}`, 'INFO');
+        
         const next = await this.scrapePage(page, url);
         
-        if (n % this.saveProgressEvery === 0) {
+        // Salva progress più frequentemente per dashboard
+        if (n % this.saveProgressEvery === 0 || n === maxPages) {
           await this.saveCSV();
-          await this.saveCheckpoint(n);
-          this.log(`💾 Progress salvato: ${this.products.length} prodotti fino a pagina ${n}`);
+          await this.saveProgress(n, 'running');
+          const duration = Math.round((Date.now() - this.startTime) / 60000);
+          this.log(`💾 Progress: ${this.products.length} prodotti, ${this.stats.imagesDownloaded} immagini, ${duration}min`, 'SUCCESS', 'checkpoint');
         }
         
         if (next && next !== url) {
           url = next;
-          await page.waitForTimeout(30000 + Math.random() * 30000);
+          const delay = 30000 + Math.random() * 30000; // 30-60s
+          this.log(`⏳ Pausa ${Math.round(delay/1000)}s prima prossima pagina...`, 'DEBUG');
+          await page.waitForTimeout(delay);
         } else {
-          this.log('Fine paginazione');
+          this.log('✓ Fine paginazione', 'INFO', 'pagination_end');
           break;
         }
       }
 
-      this.log(`COMPLETATO: ${n} pagine, ${this.products.length} prodotti unici`);
+      const duration = Math.round((Date.now() - this.startTime) / 60000);
+      this.log(`\n${'='.repeat(50)}`, 'SUCCESS');
+      this.log(`✅ COMPLETATO: ${n} pagine, ${this.products.length} prodotti, ${duration}min`, 'SUCCESS', 'scraping_complete');
+      this.log(`${'='.repeat(50)}`, 'SUCCESS');
+      
     } finally {
       await browser.close();
+      this.log('✓ Browser chiuso', 'DEBUG');
     }
   }
 
   async saveCSV() {
     if (this.products.length === 0) {
-      this.log('Nessun prodotto da salvare');
+      this.log('⚠️ Nessun prodotto da salvare', 'WARN');
       return;
     }
+    
     await this.csvWriter.writeRecords(this.products);
     
     try {
@@ -599,47 +473,46 @@ class ScraperWPAIFinal {
       await fsp.unlink(this.csvTmpPath).catch(() => {});
     }
     
-    this.log(`CSV salvato: ${this.csvFinalPath} (${this.products.length} righe)`);
+    this.log(`💾 CSV salvato: ${this.csvFinalPath} (${this.products.length} righe)`, 'SUCCESS', 'csv_saved');
     
     const withNames = this.products.filter(p => p.name && p.name !== 'Prodotto').length;
     const withPrices = this.products.filter(p => p.regular_price).length;
+    const withImages = this.products.filter(p => p.images).length;
     const withBrands = this.products.filter(p => p.brand).length;
-    const withCompat = this.products.filter(p => p['attribute:pa_compatibilita']).length;
-    const withColor = this.products.filter(p => p['attribute:pa_colore']).length;
-    const withRealStock = this.products.filter(p => p.stock_quantity > 0 && p.stock_quantity !== 10).length;
     
-    this.log(`Statistiche: ${withNames} con nome, ${withPrices} con prezzo, ${withBrands} con brand`);
-    this.log(`Attributi: ${withCompat} con compatibilità, ${withColor} con colore, ${withRealStock} con stock preciso`);
+    this.log(`📊 Stats: ${withNames} nomi, ${withPrices} prezzi, ${withImages} img, ${withBrands} brand`, 'INFO', 'csv_stats');
   }
 
   async run(maxPages = 20) {
-    // Acquisisci lock
-    if (!await this.acquireLock()) {
-      this.log('❌ Scraper già in corso, uscita');
-      return;
-    }
+    this.log(`\n${'█'.repeat(60)}`, 'INFO');
+    this.log(`${'█'.repeat(60)}`, 'INFO');
+    this.log(`   SCRAPER COMPONENTI DIGITALI v3.0 NO LOCK`, 'SUCCESS');
+    this.log(`   Session ID: ${this.sessionId}`, 'INFO');
+    this.log(`   Target Pages: ${maxPages}`, 'INFO');
+    this.log(`   Start Time: ${new Date().toLocaleString('it-IT')}`, 'INFO');
+    this.log(`${'█'.repeat(60)}`, 'INFO');
+    this.log(`${'█'.repeat(60)}\n`, 'INFO');
     
     try {
       const gracefulShutdown = async (signal) => {
         if (this.isShuttingDown) return;
         this.isShuttingDown = true;
         
-        this.log(`\n⚠️ ${signal} ricevuto`);
+        this.log(`\n⚠️ ${signal} ricevuto`, 'WARN', 'signal_received');
         
         try {
           if (this.products.length > 0) {
             await this.saveCSV();
-            this.log('✅ CSV salvato');
+            this.log('✅ CSV salvato', 'SUCCESS');
           }
           
-          this.log('✅ Checkpoint mantenuto per resume');
-          await this.releaseLock();
-          this.log('✅ Graceful shutdown completato');
+          await this.saveProgress(this.stats.currentPage, 'interrupted');
+          this.log('✅ Progress salvato per resume', 'SUCCESS');
+          this.log('✅ Graceful shutdown completato', 'SUCCESS', 'shutdown_complete');
           
           process.exit(0);
         } catch (err) {
-          this.log(`❌ Errore shutdown: ${err.message}`);
-          await this.releaseLock();
+          this.log(`❌ Errore shutdown: ${err.message}`, 'ERROR');
           process.exit(1);
         }
       };
@@ -651,32 +524,39 @@ class ScraperWPAIFinal {
       
       await this.scrapeAll(startUrl, maxPages);
       await this.saveCSV();
-      await this.clearCheckpoint();
-      await this.releaseLock(); // 🆕 AGGIUNTO - CRITICO!
-      this.log('✅ Scraping completato con successo');
+      await this.saveProgress(this.stats.currentPage, 'completed');
+      await this.clearProgress();
+      
+      const duration = Math.round((Date.now() - this.startTime) / 60000);
+      this.log(`\n✅ SCRAPING COMPLETATO CON SUCCESSO`, 'SUCCESS', 'final_success');
+      this.log(`📊 Prodotti: ${this.products.length}`, 'SUCCESS');
+      this.log(`🖼️ Immagini: ${this.stats.imagesDownloaded}`, 'SUCCESS');
+      this.log(`⏱️ Durata: ${duration} minuti`, 'SUCCESS');
+      this.log(`❌ Errori: ${this.stats.errors}`, this.stats.errors > 0 ? 'WARN' : 'SUCCESS');
       
     } catch (err) {
-      this.log(`❌ ERRORE FATALE: ${err.message}`);
-      this.log(`Stack: ${err.stack}`);
+      this.stats.errors++;
+      this.log(`❌ ERRORE FATALE: ${err.message}`, 'ERROR', 'fatal_error');
+      this.log(`Stack: ${err.stack}`, 'ERROR');
       
       if (this.products.length > 0) {
-        this.log('⚠️ Tentativo salvataggio parziale');
+        this.log('⚠️ Tentativo salvataggio parziale', 'WARN');
         try {
           await this.saveCSV();
-          this.log('✅ CSV parziale salvato');
+          await this.saveProgress(this.stats.currentPage, 'error');
+          this.log('✅ CSV parziale salvato', 'SUCCESS');
         } catch (saveErr) {
-          this.log(`❌ Errore salvataggio parziale: ${saveErr.message}`);
+          this.log(`❌ Errore salvataggio parziale: ${saveErr.message}`, 'ERROR');
         }
       }
       
-      await this.releaseLock();
       throw err;
     }
   }
 }
 
 const maxPages = process.argv[2] ? parseInt(process.argv[2]) : 20;
-new ScraperWPAIFinal().run(maxPages).catch(err => {
+new ScraperWPAINoLock().run(maxPages).catch(err => {
   console.error('[FATAL]:', err);
   process.exit(1);
 });
