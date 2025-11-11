@@ -1,6 +1,11 @@
 FROM node:18-slim
 
-# Installa dipendenze necessarie per Chromium
+# Metadata
+LABEL maintainer="scraper-cd"
+LABEL description="Scraper professionale per Componenti Digitali"
+LABEL version="3.0.0"
+
+# Installa dipendenze necessarie per Chromium e sistema
 RUN apt-get update && apt-get install -y \
     wget \
     ca-certificates \
@@ -25,35 +30,53 @@ RUN apt-get update && apt-get install -y \
     libxss1 \
     libxtst6 \
     xdg-utils \
+    curl \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
+# Working directory
 WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
 
 # Install dependencies
-RUN npm install --omit=dev
+RUN npm ci --only=production && \
+    npm cache clean --force
 
-# IMPORTANTE: Installa Chromium di Playwright
+# Install Playwright Chromium
 RUN npx playwright install chromium
 
 # Copy application files
 COPY . .
 
-# Create output directory
-RUN mkdir -p /tmp/output/images
+# Create necessary directories with proper permissions
+RUN mkdir -p /data/output/images \
+    /data/logs \
+    /data/backups \
+    /tmp/output/images && \
+    chmod -R 755 /data
 
-# Environment
-ENV NODE_ENV=production
-ENV RENDER=true
-ENV PORT=10000
+# Environment variables
+ENV NODE_ENV=production \
+    RENDER=true \
+    PORT=10000 \
+    DATA_DIR=/data \
+    TZ=Europe/Rome
 
+# Expose port
 EXPOSE 10000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:10000/healthz', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
+# Health check - ogni 30 secondi verifica che il server risponda
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:10000/healthz || exit 1
 
-# Start server
-CMD ["node", "server.js"]
+# Non-root user per sicurezza
+RUN useradd -m -u 1000 scraper && \
+    chown -R scraper:scraper /app /data /tmp
+
+USER scraper
+
+# Entry point with graceful shutdown
+ENTRYPOINT ["node"]
+CMD ["server.js"]
