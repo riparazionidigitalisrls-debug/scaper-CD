@@ -22,7 +22,7 @@ const csvMinPath = path.join(outputDir, 'prodotti_wpimport_min.csv');
 const logPath = path.join(outputDir, 'scraper.log');
 const dashboardLogPath = path.join(outputDir, 'dashboard.log');
 
-// 🆕 Sistema di logging eventi dashboard
+// Sistema di logging eventi dashboard
 function logDashboardEvent(action, details = '', req = null) {
   const timestamp = new Date().toISOString();
   const ip = req ? (req.ip || req.headers['x-forwarded-for'] || 'unknown') : 'server';
@@ -423,49 +423,38 @@ app.get('/', (req, res) => {
 
       <script>
         function switchTab(tab) {
-          // Remove active from all
           document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
           document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-          
-          // Add active to selected
           document.querySelector('.tab-button[onclick*="' + tab + '"]').classList.add('active');
           document.getElementById('tab-' + tab).classList.add('active');
         }
 
         function runFullScan(pages) {
-          if (confirm('🔄 Avviare FULL SCAN su ' + pages + ' pagine?\\n\\n⏱️ Durata stimata: ~' + Math.ceil(pages * 1.2) + ' minuti\\n\\n📋 Questa operazione:\\n• Aggiorna TUTTI i dati (prezzi, nomi, descrizioni)\\n• Scarica/aggiorna immagini\\n• Crea nuovo CSV completo\\n• Può richiedere diverse ore per 200 pagine\\n\\n⚠️ Non lanciare se uno scan è già attivo!')) {
+          if (confirm('Avviare FULL SCAN su ' + pages + ' pagine?\\n\\nDurata stimata: ~' + Math.ceil(pages * 1.2) + ' minuti')) {
             fetch('/run-full-scan?pages=' + pages, { method: 'POST' })
               .then(r => r.json())
               .then(data => {
-                if (data.success) {
-                  alert('✅ ' + data.message + '\\n\\n⏱️ Tempo previsto: ' + data.estimatedTime + '\\n\\n💡 Aggiorna la pagina tra qualche minuto per vedere i progressi.');
-                } else {
-                  alert('⚠️ ' + data.message);
-                }
+                alert(data.success ? '✅ ' + data.message : '⚠️ ' + data.message);
                 setTimeout(() => location.reload(), 2000);
               })
-              .catch(e => alert('❌ Errore: ' + e));
+              .catch(e => alert('Errore: ' + e));
           }
         }
 
         function runStockCheck(num) {
-          if (confirm('📊 Avviare stock check su ' + num + ' prodotti?\\n\\n⏱️ Durata stimata: ~' + Math.ceil(num/60) + ' minuti\\n\\n📋 Questa operazione:\\n• Controlla solo disponibilità e quantità\\n• NON aggiorna prezzi o altri dati\\n• Veloce e leggero')) {
+          if (confirm('Avviare stock check su ' + num + ' prodotti?\\n\\nDurata stimata: ~' + Math.ceil(num/60) + ' minuti')) {
             fetch('/run-stock-check?limit=' + num, { method: 'POST' })
               .then(r => r.json())
               .then(data => {
-                if (data.success) {
-                  alert('✅ ' + data.message + '\\n\\n⏱️ Tempo previsto: ' + data.estimatedTime);
-                } else {
-                  alert('⚠️ ' + data.message);
-                }
+                alert(data.success ? '✅ ' + data.message : '⚠️ ' + data.message);
                 setTimeout(() => location.reload(), 2000);
               })
-              .catch(e => alert('❌ Errore: ' + e));
+              .catch(e => alert('Errore: ' + e));
           }
         }
 
         function stopFullScan() {
-          if (confirm('⚠️ Fermare il Full Scan in corso?\\n\\n• Il checkpoint verrà salvato\\n• Potrai riprendere in seguito dalla stessa pagina')) {
+          if (confirm('Fermare il Full Scan in corso?')) {
             fetch('/stop-full-scan', { method: 'POST' })
               .then(r => r.json())
               .then(data => {
@@ -477,7 +466,7 @@ app.get('/', (req, res) => {
         }
 
         function stopStockCheck() {
-          if (confirm('⚠️ Fermare lo Stock Check in corso?\\n\\n• Il progresso verrà salvato\\n• I dati già raccolti verranno mantenuti')) {
+          if (confirm('Fermare lo Stock Check in corso?')) {
             fetch('/stop-stock-check', { method: 'POST' })
               .then(r => r.json())
               .then(data => {
@@ -488,7 +477,6 @@ app.get('/', (req, res) => {
           }
         }
 
-        // Auto-refresh ogni 30 secondi
         setTimeout(() => location.reload(), 30000);
       </script>
     </body>
@@ -496,33 +484,23 @@ app.get('/', (req, res) => {
   `);
 });
 
-// 🆕 Endpoint per lanciare FULL SCAN manuale
 app.post('/run-full-scan', (req, res) => {
   const pages = req.query.pages || 200;
-  
   logDashboardEvent('FULL_SCAN_REQUEST', `pages=${pages}`, req);
   
-  // Verifica se scraper già in corso
   const scraperLockPath = path.join(outputDir, 'scraper.lock');
   if (fs.existsSync(scraperLockPath)) {
     const lockData = JSON.parse(fs.readFileSync(scraperLockPath, 'utf8'));
     const lockAge = Date.now() - lockData.timestamp;
     
-    // Lock stale dopo 4 ore
     if (lockAge < 14400000) {
       logDashboardEvent('FULL_SCAN_BLOCKED', `già in corso da ${Math.floor(lockAge/60000)} min`, req);
-      return res.json({ 
-        success: false,
-        message: 'Full scan già in corso! Avviato da ' + Math.floor(lockAge / 60000) + ' minuti.'
-      });
-    } else {
-      // Rimuovi lock stale
-      fs.unlinkSync(scraperLockPath);
-      logDashboardEvent('FULL_SCAN_LOCK_REMOVED', 'stale lock removed', req);
+      return res.json({ success: false, message: 'Full scan già in corso!' });
     }
+    fs.unlinkSync(scraperLockPath);
+    logDashboardEvent('FULL_SCAN_LOCK_REMOVED', 'stale lock removed', req);
   }
   
-  // Crea lock file
   fs.writeFileSync(scraperLockPath, JSON.stringify({
     pid: process.pid,
     timestamp: Date.now(),
@@ -531,79 +509,52 @@ app.post('/run-full-scan', (req, res) => {
     triggeredBy: 'dashboard'
   }));
   
-  spawn('node', ['scraper_componenti_wpai_min.js', pages], {
-    detached: true,
-    stdio: 'ignore'
-  }).unref();
-  
-  logDashboardEvent('FULL_SCAN_STARTED', `pages=${pages}, estimated=${Math.ceil(pages * 1.2)}min`, req);
+  spawn('node', ['scraper_componenti_wpai_min.js', pages], { detached: true, stdio: 'ignore' }).unref();
+  logDashboardEvent('FULL_SCAN_STARTED', `pages=${pages}`, req);
   
   res.json({ 
     success: true,
     message: `Full scan avviato per ${pages} pagine.`,
-    estimatedTime: `${Math.ceil(pages * 1.2)} minuti (~${(pages * 1.2 / 60).toFixed(1)} ore)`
+    estimatedTime: `${Math.ceil(pages * 1.2)} minuti`
   });
 });
 
-// 🆕 Endpoint per fermare Full Scan
 app.post('/stop-full-scan', (req, res) => {
   logDashboardEvent('FULL_SCAN_STOP_REQUEST', '', req);
   
   exec('pkill -SIGTERM -f scraper_componenti_wpai_min.js', (error) => {
     if (error) {
-      logDashboardEvent('FULL_SCAN_STOP_FAILED', 'nessun processo attivo', req);
-      return res.json({ 
-        success: false,
-        message: 'Nessun Full Scan in corso da fermare.'
-      });
+      logDashboardEvent('FULL_SCAN_STOP_FAILED', 'nessun processo', req);
+      return res.json({ success: false, message: 'Nessun Full Scan in corso.' });
     }
     
-    // Rimuovi lock
     const scraperLockPath = path.join(outputDir, 'scraper.lock');
-    if (fs.existsSync(scraperLockPath)) {
-      fs.unlinkSync(scraperLockPath);
-    }
+    if (fs.existsSync(scraperLockPath)) fs.unlinkSync(scraperLockPath);
     
     logDashboardEvent('FULL_SCAN_STOPPED', 'checkpoint salvato', req);
-    
-    res.json({ 
-      success: true,
-      message: 'Full Scan fermato. Checkpoint salvato.' 
-    });
+    res.json({ success: true, message: 'Full Scan fermato.' });
   });
 });
 
-// Endpoint per eseguire stock check manuale
 app.post('/run-stock-check', (req, res) => {
   const limit = req.query.limit || 100;
-  
   logDashboardEvent('STOCK_CHECK_REQUEST', `limit=${limit}`, req);
   
-  // Verifica se stock-checker già in corso
   const stockLockPath = path.join(outputDir, 'stock_checker.lock');
   if (fs.existsSync(stockLockPath)) {
     const lockData = JSON.parse(fs.readFileSync(stockLockPath, 'utf8'));
     const lockAge = Date.now() - lockData.timestamp;
     
-    // Lock stale dopo 2 ore
     if (lockAge < 7200000) {
       logDashboardEvent('STOCK_CHECK_BLOCKED', `già in corso da ${Math.floor(lockAge/60000)} min`, req);
-      return res.json({ 
-        success: false,
-        message: 'Stock check già in corso! Avviato da ' + Math.floor(lockAge / 60000) + ' minuti.'
-      });
-    } else {
-      fs.unlinkSync(stockLockPath);
-      logDashboardEvent('STOCK_CHECK_LOCK_REMOVED', 'stale lock removed', req);
+      return res.json({ success: false, message: 'Stock check già in corso!' });
     }
+    fs.unlinkSync(stockLockPath);
+    logDashboardEvent('STOCK_CHECK_LOCK_REMOVED', 'stale lock removed', req);
   }
   
-  spawn('node', ['stock-checker-light.js', limit], {
-    detached: true,
-    stdio: 'ignore'
-  }).unref();
-  
-  logDashboardEvent('STOCK_CHECK_STARTED', `limit=${limit}, estimated=${Math.ceil(limit/60)}min`, req);
+  spawn('node', ['stock-checker-light.js', limit], { detached: true, stdio: 'ignore' }).unref();
+  logDashboardEvent('STOCK_CHECK_STARTED', `limit=${limit}`, req);
   
   res.json({ 
     success: true,
@@ -612,39 +563,27 @@ app.post('/run-stock-check', (req, res) => {
   });
 });
 
-// 🆕 Endpoint per fermare Stock Check
 app.post('/stop-stock-check', (req, res) => {
   logDashboardEvent('STOCK_CHECK_STOP_REQUEST', '', req);
   
   exec('pkill -SIGTERM -f stock-checker-light.js', (error) => {
     if (error) {
-      logDashboardEvent('STOCK_CHECK_STOP_FAILED', 'nessun processo attivo', req);
-      return res.json({ 
-        success: false,
-        message: 'Nessuno Stock Check in corso da fermare.'
-      });
+      logDashboardEvent('STOCK_CHECK_STOP_FAILED', 'nessun processo', req);
+      return res.json({ success: false, message: 'Nessuno Stock Check in corso.' });
     }
     
     const stockLockPath = path.join(outputDir, 'stock_checker.lock');
-    if (fs.existsSync(stockLockPath)) {
-      fs.unlinkSync(stockLockPath);
-    }
+    if (fs.existsSync(stockLockPath)) fs.unlinkSync(stockLockPath);
     
     logDashboardEvent('STOCK_CHECK_STOPPED', 'progresso salvato', req);
-    
-    res.json({ 
-      success: true,
-      message: 'Stock Check fermato. Progresso salvato.' 
-    });
+    res.json({ success: true, message: 'Stock Check fermato.' });
   });
 });
 
-// Health check per Render
 app.get('/healthz', (req, res) => {
   res.status(200).send('OK');
 });
 
-// Helper: Get complete stats
 function getStats() {
   const stats = {
     totalProducts: 0,
@@ -675,7 +614,6 @@ function getStats() {
     if (fs.existsSync(outputDir)) {
       const files = fs.readdirSync(outputDir);
       
-      // CSV files
       files.forEach(file => {
         if (file.endsWith('.csv')) {
           stats.csvFiles.push(file);
@@ -721,7 +659,6 @@ function getStats() {
         }
       });
       
-      // Images
       const imagesPath = path.join(outputDir, 'images');
       if (fs.existsSync(imagesPath)) {
         const images = fs.readdirSync(imagesPath);
@@ -737,31 +674,26 @@ function getStats() {
         stats.imagesSize = (totalSize / 1024 / 1024).toFixed(1);
       }
       
-      // Scraper checkpoint
       const checkpointPath = path.join(outputDir, 'scraper_checkpoint.json');
       if (fs.existsSync(checkpointPath)) {
         stats.checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
       }
       
-      // Scraper lock
       const scraperLockPath = path.join(outputDir, 'scraper.lock');
       if (fs.existsSync(scraperLockPath)) {
         stats.scraperLock = JSON.parse(fs.readFileSync(scraperLockPath, 'utf8'));
       }
       
-      // Stock checker progress
       const stockProgressPath = path.join(outputDir, 'stock_checker_progress.json');
       if (fs.existsSync(stockProgressPath)) {
         stats.stockProgress = JSON.parse(fs.readFileSync(stockProgressPath, 'utf8'));
       }
       
-      // Stock checker lock
       const stockLockPath = path.join(outputDir, 'stock_checker.lock');
       if (fs.existsSync(stockLockPath)) {
         stats.stockCheckerLock = JSON.parse(fs.readFileSync(stockLockPath, 'utf8'));
       }
       
-      // 🆕 Scraper Logs
       const scraperLogPath = path.join(outputDir, 'scraper.log');
       if (fs.existsSync(scraperLogPath)) {
         const logs = fs.readFileSync(scraperLogPath, 'utf8');
@@ -769,7 +701,6 @@ function getStats() {
         stats.scraperLogs = lines.slice(-50).join('\n');
       }
       
-      // 🆕 Stock Checker Logs
       const stockLogFiles = files.filter(f => f.startsWith('stock_checker_') && f.endsWith('.log')).sort();
       if (stockLogFiles.length > 0) {
         const latestStockLog = path.join(outputDir, stockLogFiles[stockLogFiles.length - 1]);
@@ -778,7 +709,6 @@ function getStats() {
         stats.stockLogs = lines.slice(-50).join('\n');
       }
       
-      // 🆕 Dashboard Logs
       if (fs.existsSync(dashboardLogPath)) {
         const logs = fs.readFileSync(dashboardLogPath, 'utf8');
         const lines = logs.split('\n');
@@ -792,7 +722,6 @@ function getStats() {
   return stats;
 }
 
-// Helper functions
 function parseCSVLine(line) {
   const result = [];
   let current = '';
@@ -800,7 +729,6 @@ function parseCSVLine(line) {
   
   for (let i = 0; i < line.length; i++) {
     const char = line[i];
-    
     if (char === '"') {
       inQuotes = !inQuotes;
     } else if (char === ',' && !inQuotes) {
@@ -810,7 +738,6 @@ function parseCSVLine(line) {
       current += char;
     }
   }
-  
   result.push(current.trim());
   return result;
 }
@@ -859,7 +786,6 @@ function getDiskStats() {
   }
 }
 
-// Avvia server
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server v2.4 avviato su porta ${PORT}`);
   console.log(`📊 Dashboard: http://localhost:${PORT}`);
@@ -867,88 +793,46 @@ app.listen(PORT, '0.0.0.0', () => {
   
   logDashboardEvent('SERVER_STARTED', `port=${PORT}, node=${process.version}`);
   
-  // Setup cron jobs solo in produzione
   if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
     console.log('\n🔧 Configurazione CRON jobs...');
-    
     logDashboardEvent('CRON_INITIALIZED', 'production mode');
   
-    // ✅ Full scan SOLO mezzanotte
     cron.schedule('0 0 * * *', () => {
       logDashboardEvent('CRON_FULL_SCAN', 'triggered at 00:00 UTC');
-      console.log('[CRON] Full scan notturno LENTO - 200 pagine ~4h');
+      console.log('[CRON] Full scan notturno LENTO - 200 pagine');
       
       const scraperLockPath = path.join(outputDir, 'scraper.lock');
       if (fs.existsSync(scraperLockPath)) {
         logDashboardEvent('CRON_FULL_SCAN_SKIPPED', 'lock exists');
-        console.log('[CRON] ⚠️ Full scan già in corso, skip');
+        console.log('[CRON] Skip - già in corso');
         return;
       }
       
-      spawn('node', ['scraper_componenti_wpai_min.js', '200'], {
-        detached: true,
-        stdio: 'ignore'
-      }).unref();
-      
+      spawn('node', ['scraper_componenti_wpai_min.js', '200'], { detached: true, stdio: 'ignore' }).unref();
       logDashboardEvent('CRON_FULL_SCAN_STARTED', 'pages=200');
     });
     
-    // ✅ Stock check ogni 2h dalle 6 alle 22
     cron.schedule('0 6,8,10,12,14,16,18,20,22 * * *', () => {
       const hour = new Date().getUTCHours();
       logDashboardEvent('CRON_STOCK_CHECK', `triggered at ${hour}:00 UTC`);
-      console.log('[CRON] Stock check VELOCE - 5000 prodotti ~1.5h');
+      console.log('[CRON] Stock check VELOCE - 5000 prodotti');
       
       const stockLockPath = path.join(outputDir, 'stock_checker.lock');
       if (fs.existsSync(stockLockPath)) {
         logDashboardEvent('CRON_STOCK_CHECK_SKIPPED', 'lock exists');
-        console.log('[CRON] ⚠️ Stock check già in corso, skip questo turno');
+        console.log('[CRON] Skip - già in corso');
         return;
       }
       
-      spawn('node', ['stock-checker-light.js', '5000'], {
-        detached: true,
-        stdio: 'ignore'
-      }).unref();
-      
+      spawn('node', ['stock-checker-light.js', '5000'], { detached: true, stdio: 'ignore' }).unref();
       logDashboardEvent('CRON_STOCK_CHECK_STARTED', 'limit=5000');
     });
     
     console.log('⏰ CRON CONFIGURATI:');
     console.log('   ✅ Full scan: SOLO 00:00 UTC - LENTO (4h)');
     console.log('   ✅ Stock check: 6,8,10,12,14,16,18,20,22 UTC - VELOCE (1.5h)');
-    console.log('   ✅ 9 check/giorno × 5000 = 45.000 verifiche stock');
-    console.log('   ✅ Sistema LOCK anti-sovrapposizione attivo');
+    console.log('   ✅ 45.000 verifiche stock/giorno');
+    console.log('   ✅ Sistema LOCK anti-sovrapposizione');
     console.log('   ✅ Logging completo eventi dashboard');
-  }
-  
-  if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
-    console.log('\n⚡ SISTEMA FINALE v2.4:');
-    console.log('• Full scan notturno 00:00 UTC: LENTO 4h (tutti i dati)');
-    console.log('• Stock check 6-22 ogni 2h: VELOCE 1.5h (solo stock)');
-    console.log('• 45.000 verifiche stock/giorno');
-    console.log('• Checkpoint anti-crash attivo');
-    console.log('• Sistema LOCK per evitare sovrapposizioni');
-    console.log('• Logging completo eventi dashboard');
-  }
-});
-```
-
----
-
-# ✅ TUTTO OK - LOGGING COMPLETO
-
-Dashboard ora logga:
-- ✅ Visualizzazioni pagina
-- ✅ Click pulsanti Full Scan
-- ✅ Click pulsanti Stock Check
-- ✅ Stop manuali
-- ✅ CRON trigger
-- ✅ Lock skip
-- ✅ Start/Stop processi
-- ✅ IP utente (se disponibile)
-- ✅ 3 tab separati: Scraper / Stock / Dashboard
-
-    console.log('• Logging completo eventi dashboard');
   }
 });
