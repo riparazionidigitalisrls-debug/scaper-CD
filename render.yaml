@@ -1,32 +1,101 @@
 services:
   - type: web
-    name: scraper-componenti
+    name: scraper-componenti-digitali
     runtime: docker
     dockerfilePath: ./Dockerfile
-    # 🆕 UPGRADE A STARTER (necessario per disk)
+    
+    # Piano STARTER per avere accesso al disco persistente
     plan: starter
     region: frankfurt
     
-    # 🆕 AGGIUNGI DISCO PERSISTENTE
+    # DISCO PERSISTENTE - 1GB per CSV, backup e immagini
     disk:
-      name: scraper-persistent-data
+      name: scraper-data
       mountPath: /data
-      sizeGB: 1  # 1GB sufficiente (circa 50k prodotti + immagini)
+      sizeGB: 1
     
     # Variabili ambiente
     envVars:
       - key: NODE_ENV
         value: production
+        
       - key: RENDER
-        value: true
+        value: "true"
+        
       - key: PORT
-        value: 10000
-      # 🆕 AGGIUNGI QUESTA
+        value: "10000"
+        
       - key: DATA_DIR
         value: /data
+        
+      - key: TZ
+        value: Europe/Rome
+        
+      - key: IMAGES_BASE_URL
+        value: https://scraper-cd.onrender.com
+        
+      # Limiti per sicurezza
+      - key: MAX_SCRAPING_TIME
+        value: "14400"  # 4 ore in secondi
+        
+      - key: MAX_STOCK_TIME
+        value: "7200"   # 2 ore in secondi
+        
+      # Configurazione scraper
+      - key: SCRAPER_USER_AGENT
+        value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        
+      - key: CRAWL_DELAY
+        value: "300"    # 300ms tra richieste
+        
+      # Notifiche (opzionale)
+      # - key: WEBHOOK_URL
+      #   value: YOUR_WEBHOOK_URL
+      
+    # Build configuration
+    buildCommand: npm ci --only=production
     
-    # Health check
+    # Health check path
     healthCheckPath: /healthz
     
-    # Auto deploy
+    # Auto deploy da GitHub
     autoDeploy: true
+    
+    # Resource configuration
+    numInstances: 1
+    
+    # Scaling (per piano superiori)
+    # scaling:
+    #   minInstances: 1
+    #   maxInstances: 3
+    #   targetCPUPercent: 70
+    
+    # Domains personalizzati (opzionale)
+    # customDomains:
+    #   - domain: scraper.tuodominio.com
+    #     path: /
+
+# Cron Jobs (per piano Team o superiori)
+# Per ora usiamo node-cron nel server principale
+# In futuro con piano Team:
+# 
+# cronJobs:
+#   - name: scraping-notturno
+#     command: node scraper_componenti_wpai_min.js 200
+#     schedule: "0 2 * * *"
+#     
+#   - name: stock-check-diurno
+#     command: node stock-checker-light.js 5000
+#     schedule: "0 7,9,12,14,17,19,22 * * *"
+#     
+#   - name: backup-giornaliero
+#     command: node scripts/backup.js
+#     schedule: "0 5 * * *"
+
+# Database (opzionale per future espansioni)
+# databases:
+#   - name: scraper-db
+#     plan: starter
+#     databaseName: scraperdb
+#     user: scraper
+#     region: frankfurt
