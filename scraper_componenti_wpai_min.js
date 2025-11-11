@@ -259,14 +259,36 @@ class ScraperWPAINoLock {
           
           const skuMatch = txt.match(/(?:Cod\.?\s*Art\.?|Codice|Cod|Art\.?|Articolo|Rif\.?)[:\s]*\n?\s*([A-Z0-9\-\.]+)/i);
           const nameMatch = txt.match(/^(.+?)(?:Cod\.?\s*Art\.?|Codice|€)/i);
-          const priceMatch = txt.match(/(\d+[.,]\d+)\s*€/);
+          
+          // Cerca TUTTI i prezzi (originale + scontato)
+          const allPrices = txt.match(/€\s*(\d+[.,]\d+)|(\d+[.,]\d+)\s*€/g);
+          let regular_price = '';
+          let original_price = null;
+          
+          if (allPrices && allPrices.length > 0) {
+            // Estrai numeri dai match
+            const prices = allPrices.map(p => {
+              const m = p.match(/(\d+[.,]\d+)/);
+              return m ? parseFloat(m[1].replace(',', '.')) : 0;
+            }).filter(p => p > 0);
+            
+            if (prices.length === 1) {
+              // Un solo prezzo
+              regular_price = prices[0].toFixed(2);
+            } else if (prices.length >= 2) {
+              // Più prezzi: il minore è lo scontato, il maggiore è l'originale
+              const sorted = [...prices].sort((a, b) => a - b);
+              regular_price = sorted[0].toFixed(2); // Prezzo più basso
+              original_price = sorted[sorted.length - 1].toFixed(2); // Prezzo più alto
+            }
+          }
+          
           const stockMatch = txt.match(/(\d+)\s*(?:pz|PZ|pezzi|disponibili|disp\.)/i);
           const brandMatch = txt.match(/(?:Marca|Brand)[:\s]*\n?\s*([^\n]+)/i);
           const qualityMatch = txt.match(/(?:Qualità|Quality)[:\s]*\n?\s*([^\n]+)/i);
           const packMatch = txt.match(/\b(?:Confezione|Imballo)\b[:\s]*\n?\s*([^\n]+)/i);
           const colorMatch = txt.match(/(?:Colore|Color)[:\s]*\n?\s*([^\n]+)/i);
           const compatMatch = txt.match(/(?:Compatibile|Compatibilità)[:\s]*\n?\s*([^\n]+)/i);
-          const origPriceMatch = txt.match(/€\s*(\d+[.,]\d+).*?€\s*(\d+[.,]\d+)/);
 
           const imgEl = el.querySelector('img[src*=".JPG"], img[src*=".jpg"], img[src*=".jpeg"]');
           const imgUrl = imgEl ? imgEl.getAttribute('src') : null;
@@ -284,14 +306,14 @@ class ScraperWPAINoLock {
               index: i,
               sku: skuMatch[1].trim(),
               name: nameMatch ? nameMatch[1].trim() : 'Prodotto',
-              regular_price: priceMatch ? priceMatch[1].replace(',', '.') : '',
+              regular_price: regular_price,
               stock_quantity: stockMatch ? parseInt(stockMatch[1]) : 10,
               brand: brandMatch ? brandMatch[1].trim() : '',
               quality: qualityMatch ? qualityMatch[1].trim() : '',
               packaging: packMatch ? packMatch[1].trim() : '',
               color: colorMatch ? colorMatch[1].trim() : '',
               compatibility: compatMatch ? compatMatch[1].trim() : '',
-              original_price: origPriceMatch ? origPriceMatch[1].replace(',', '.') : null,
+              original_price: original_price,
               image_url: imgUrl
             });
           }
