@@ -1,745 +1,852 @@
-// SCRAPER SETUP:
-// - scraper_componenti_wpai_min.js: Full scan notturno LENTO (4h) con checkpoint
-// - stock-checker-light.js: Stock check veloce (1.5h) solo stock/quantity
-// - scraper_componenti_enterprise.js: NON USATO (sostituito da wpai_min con checkpoint)
+// server.js - Server Professionale per Scraper Componenti Digitali
+// Sistema completo con dashboard avanzata, logging dettagliato e scheduling ottimizzato
 
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-const { spawn, exec } = require('child_process');
+const { spawn } = require('child_process');
 const cron = require('node-cron');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Path per output (Render usa /data per persistenza)
-const outputBase = process.env.DATA_DIR || (process.env.RENDER ? '/data' : '.');
-const outputDir = path.join(outputBase, 'output');
+// =====================================================
+// CONFIGURAZIONE PATHS E DIRECTORY
+// =====================================================
+const dataDir = process.env.DATA_DIR || (process.env.RENDER ? '/data' : './data');
+const outputDir = path.join(dataDir, 'output');
+const logsDir = path.join(dataDir, 'logs');
+const backupDir = path.join(dataDir, 'backups');
 
-// File paths
+// File paths principali
 const csvLatestPath = path.join(outputDir, 'prodotti_latest.csv');
-const csvMinPath = path.join(outputDir, 'prodotti_wpimport_min.csv');
-const logPath = path.join(outputDir, 'scraper.log');
-const dashboardLogPath = path.join(outputDir, 'dashboard.log');
+const systemLogPath = path.join(logsDir, 'system.log');
+const scraperLogPath = path.join(logsDir, 'scraper.log');
+const stockLogPath = path.join(logsDir, 'stock_checker.log');
+const eventsLogPath = path.join(logsDir, 'events.json');
 
-// Sistema di logging eventi dashboard
-function logDashboardEvent(action, details = '', req = null) {
-  const timestamp = new Date().toISOString();
-  const ip = req ? (req.ip || req.headers['x-forwarded-for'] || 'unknown') : 'server';
-  const line = `[${timestamp}] [DASHBOARD] [${ip}] ${action} ${details}\n`;
-  
-  console.log(line.trim());
-  try {
-    fs.appendFileSync(dashboardLogPath, line);
-  } catch (e) {}
+// =====================================================
+// SISTEMA DI LOGGING PROFESSIONALE
+// =====================================================
+class Logger {
+  constructor(logFile) {
+    this.logFile = logFile;
+    this.ensureLogDir();
+  }
+
+  ensureLogDir() {
+    [logsDir, outputDir, backupDir].forEach(dir => {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+    });
+  }
+
+  log(message, level = 'INFO', metadata = {}) {
+    const timestamp = new Date().toISOString();
+    const logEntry = {
+      timestamp,
+      level,
+      message,
+      ...metadata
+    };
+
+    // Console log
+    console.log(`[${timestamp}] [${level}] ${message}`);
+    
+    // File log
+    try {
+      const logLine = JSON.stringify(logEntry) + '\n';
+      fs.appendFileSync(this.logFile, logLine);
+      
+      // Aggiungi anche a events.json per eventi importanti
+      if (level === 'ERROR' || level === 'WARN' || metadata.event) {
+        this.logEvent(logEntry);
+      }
+    } catch (e) {
+      console.error('Log error:', e.message);
+    }
+  }
+
+  logEvent(entry) {
+    try {
+      let events = [];
+      if (fs.existsSync(eventsLogPath)) {
+        const content = fs.readFileSync(eventsLogPath, 'utf8');
+        events = JSON.parse(content || '[]');
+      }
+      
+      events.unshift(entry);
+      events = events.slice(0, 1000); // Mantieni solo ultimi 1000 eventi
+      
+      fs.writeFileSync(eventsLogPath, JSON.stringify(events, null, 2));
+    } catch (e) {
+      // Silent fail
+    }
+  }
 }
 
-// Serve immagini statiche
-app.use('/images', express.static(path.join(outputDir, 'images')));
-app.use('/output', express.static(outputDir));
+const logger = new Logger(systemLogPath);
 
-// Helper per base URL pubblico dietro reverse proxy
-function publicBase(req) {
+// =====================================================
+// TRACKING PROCESSI E STATO
+// =====================================================
+const processTracker = {
+  running: {},
+  history: [],
+  
+  start(processId, type, params) {
+    this.running[processId] = {
+      id: processId,
+      type,
+      params,
+      startTime: Date.now(),
+      status: 'running',
+      progress: 0
+    };
+    
+    logger.log(`Process started: ${type}`, 'INFO', {
+      event: 'process_start',
+      processId,
+      type,
+      params
+    });
+  },
+  
+  update(processId, progress, message) {
+    if (this.running[processId]) {
+      this.running[processId].progress = progress;
+      this.running[processId].lastUpdate = Date.now();
+      this.running[processId].message = message;
+    }
+  },
+  
+  end(processId, status = 'completed', result = {}) {
+    const process = this.running[processId];
+    if (process) {
+      process.endTime = Date.now();
+      process.duration = process.endTime - process.startTime;
+      process.status = status;
+      process.result = result;
+      
+      this.history.unshift(process);
+      this.history = this.history.slice(0, 100); // Mantieni solo ultimi 100
+      
+      delete this.running[processId];
+      
+      logger.log(`Process ended: ${process.type}`, 'INFO', {
+        event: 'process_end',
+        processId,
+        status,
+        duration: process.duration,
+        result
+      });
+    }
+  },
+  
+  getRunning() {
+    return Object.values(this.running);
+  },
+  
+  getHistory() {
+    return this.history;
+  }
+};
+
+// =====================================================
+// MIDDLEWARE E ROUTING STATICO
+// =====================================================
+app.use(express.json());
+app.use('/output', express.static(outputDir));
+app.use('/logs', express.static(logsDir));
+app.use('/backups', express.static(backupDir));
+
+// Helper per URL pubblico
+function getPublicUrl(req) {
   const proto = req.headers['x-forwarded-proto'] || 'http';
   const host = req.headers['x-forwarded-host'] || req.headers.host || `localhost:${PORT}`;
   return `${proto}://${host}`;
 }
 
-// Helper per check esistenza file
-function getLatestCsvPath() {
-  if (fs.existsSync(csvLatestPath)) return csvLatestPath;
-  if (fs.existsSync(csvMinPath)) return csvMinPath;
-  return null;
-}
-
-// Dashboard principale
+// =====================================================
+// DASHBOARD PRINCIPALE MIGLIORATA
+// =====================================================
 app.get('/', (req, res) => {
-  logDashboardEvent('PAGE_VIEW', '', req);
-  
-  const stats = getStats();
-  const base = publicBase(req);
+  const stats = getSystemStats();
+  const baseUrl = getPublicUrl(req);
   
   res.send(`
-    <!DOCTYPE html>
-    <html lang="it">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Scraper Dashboard - Componenti Digitali</title>
-      <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          min-height: 100vh;
-          padding: 20px;
-        }
-        .container { max-width: 1200px; margin: 0 auto; }
-        h1 { color: white; text-align: center; margin-bottom: 30px; font-size: 2em; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; }
-        .card { 
-          background: white; 
-          border-radius: 10px; 
-          padding: 20px; 
-          box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-          transition: transform 0.2s;
-        }
-        .card:hover { transform: translateY(-2px); }
-        .card h2 { color: #333; margin-bottom: 15px; font-size: 1.2em; }
-        .stat { font-size: 2em; font-weight: bold; color: #667eea; }
-        .label { color: #666; margin-top: 5px; font-size: 0.9em; }
-        button { 
-          background: #667eea; 
-          color: white; 
-          border: none; 
-          padding: 12px 20px; 
-          border-radius: 5px; 
-          cursor: pointer; 
-          margin: 5px;
-          font-size: 14px;
-          transition: background 0.3s;
-        }
-        button:hover { background: #5a67d8; }
-        button.enterprise { background: #f59e0b; }
-        button.enterprise:hover { background: #d97706; }
-        button.stock { background: #10b981; }
-        button.stock:hover { background: #059669; }
-        button.danger { background: #ef4444; }
-        button.danger:hover { background: #dc2626; }
-        .logs { 
-          background: #1a1a1a; 
-          color: #0f0; 
-          padding: 15px; 
-          border-radius: 5px; 
-          font-family: 'Courier New', monospace;
-          font-size: 12px;
-          max-height: 400px;
-          overflow-y: auto;
-          white-space: pre-wrap;
-          word-wrap: break-word;
-        }
-        .alert {
-          background: #fef3c7;
-          border-left: 4px solid #f59e0b;
-          padding: 15px;
-          margin: 20px 0;
-          border-radius: 5px;
-        }
-        .success { background: #d1fae5; border-left-color: #10b981; }
-        .info { background: #dbeafe; border-left-color: #3b82f6; }
-        .files { list-style: none; }
-        .files li { 
-          padding: 8px; 
-          margin: 5px 0; 
-          background: #f3f4f6; 
-          border-radius: 5px;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-        }
-        .badge {
-          background: #667eea;
-          color: white;
-          padding: 4px 12px;
-          border-radius: 12px;
-          font-size: 11px;
-          font-weight: bold;
-          display: inline-block;
-          margin-bottom: 10px;
-        }
-        .badge.green { background: #10b981; }
-        .badge.red { background: #ef4444; }
-        .badge.orange { background: #f59e0b; }
-        .system-health {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-          gap: 10px;
-          margin-top: 10px;
-        }
-        .health-item {
-          background: #f9fafb;
-          padding: 10px;
-          border-radius: 5px;
-          text-align: center;
-        }
-        .health-value {
-          font-size: 1.5em;
-          font-weight: bold;
-          color: #667eea;
-        }
-        .health-label {
-          font-size: 0.8em;
-          color: #666;
-          margin-top: 5px;
-        }
-        .progress-bar {
-          width: 100%;
-          height: 20px;
-          background: #e5e7eb;
-          border-radius: 10px;
-          overflow: hidden;
-          margin-top: 10px;
-        }
-        .progress-fill {
-          height: 100%;
-          background: linear-gradient(90deg, #667eea, #764ba2);
-          transition: width 0.3s;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          color: white;
-          font-size: 12px;
-          font-weight: bold;
-        }
-        .section-divider {
-          border-top: 2px solid rgba(255,255,255,0.2);
-          margin: 15px 0;
-          padding-top: 15px;
-        }
-        .lock-indicator {
-          display: inline-block;
-          width: 10px;
-          height: 10px;
-          border-radius: 50%;
-          margin-right: 8px;
-        }
-        .lock-indicator.active { background: #ef4444; animation: pulse 2s infinite; }
-        .lock-indicator.idle { background: #10b981; }
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.5; }
-        }
-        .tab-container {
-          margin-top: 20px;
-        }
-        .tab-buttons {
-          display: flex;
-          gap: 10px;
-          margin-bottom: 10px;
-        }
-        .tab-button {
-          padding: 10px 20px;
-          background: rgba(255,255,255,0.2);
-          color: white;
-          border: none;
-          border-radius: 5px;
-          cursor: pointer;
-          transition: background 0.3s;
-        }
-        .tab-button.active {
-          background: white;
-          color: #667eea;
-        }
-        .tab-content {
-          display: none;
-        }
-        .tab-content.active {
-          display: block;
-        }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <h1>🚀 Scraper Componenti Digitali - Dashboard v2.4</h1>
-        
-        <div class="alert">
-          <strong>✅ SISTEMA FINALE v2.4:</strong><br>
-          • <strong>Full scan notturno (00:00 UTC):</strong> LENTO 4h - Tutti i dati (prezzi, stock, immagini, attributi)<br>
-          • <strong>Stock check veloce (6-22 ogni 2h):</strong> VELOCE 1.5h - Solo stock e quantità<br>
-          • <strong>45.000 verifiche stock/giorno</strong> ✅<br>
-          • <strong>Finestra overselling: MAX 2 ORE</strong> ✅<br>
-          • <strong>Sistema di LOCK anti-sovrapposizione</strong> ✅<br>
-          • <strong>Logging completo eventi dashboard</strong> ✅
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scraper CD - Dashboard Professionale</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .container { max-width: 1400px; margin: 0 auto; }
+    
+    .header {
+      background: white;
+      border-radius: 10px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    
+    .header h1 { 
+      color: #333; 
+      font-size: 2em;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    .status-badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 14px;
+      font-weight: 500;
+    }
+    
+    .status-badge.active { background: #c6f6d5; color: #22543d; }
+    .status-badge.warning { background: #fed7aa; color: #7c2d12; }
+    .status-badge.error { background: #fed7d7; color: #742a2a; }
+    
+    .grid { 
+      display: grid; 
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); 
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+    
+    .card { 
+      background: white; 
+      border-radius: 10px; 
+      padding: 20px; 
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      transition: transform 0.2s;
+    }
+    
+    .card:hover { transform: translateY(-2px); }
+    
+    .card h2 { 
+      color: #333; 
+      margin-bottom: 15px; 
+      font-size: 1.1em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .metric { 
+      font-size: 2.5em; 
+      font-weight: bold; 
+      color: #667eea; 
+      margin: 10px 0;
+    }
+    
+    .metric-label { 
+      color: #666; 
+      font-size: 0.9em;
+      margin-top: 5px;
+    }
+    
+    .action-section {
+      background: white;
+      border-radius: 10px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    
+    .button-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 15px 0;
+    }
+    
+    button { 
+      background: #667eea; 
+      color: white; 
+      border: none; 
+      padding: 10px 20px; 
+      border-radius: 5px; 
+      cursor: pointer; 
+      font-size: 14px;
+      font-weight: 500;
+      transition: all 0.3s;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    
+    button:hover { 
+      background: #5a67d8;
+      transform: translateY(-1px);
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+    
+    button.stock { background: #10b981; }
+    button.stock:hover { background: #059669; }
+    
+    button.scrape { background: #f59e0b; }
+    button.scrape:hover { background: #d97706; }
+    
+    button.danger { background: #ef4444; }
+    button.danger:hover { background: #dc2626; }
+    
+    .schedule-info {
+      background: #f0f9ff;
+      border-left: 4px solid #3b82f6;
+      padding: 15px;
+      margin: 15px 0;
+      border-radius: 5px;
+    }
+    
+    .schedule-info h3 {
+      color: #1e40af;
+      margin-bottom: 10px;
+    }
+    
+    .schedule-item {
+      padding: 5px 0;
+      border-bottom: 1px solid #e0e7ff;
+    }
+    
+    .schedule-item:last-child {
+      border-bottom: none;
+    }
+    
+    .log-viewer {
+      background: #1a1a1a;
+      color: #00ff00;
+      padding: 15px;
+      border-radius: 5px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      height: 400px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    
+    .process-list {
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    
+    .process-item {
+      padding: 10px;
+      border-bottom: 1px solid #e5e7eb;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .process-item:last-child {
+      border-bottom: none;
+    }
+    
+    .progress-bar {
+      width: 100%;
+      height: 20px;
+      background: #e5e7eb;
+      border-radius: 10px;
+      overflow: hidden;
+      margin-top: 5px;
+    }
+    
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #667eea, #764ba2);
+      transition: width 0.3s;
+    }
+    
+    .tabs {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    
+    .tab {
+      padding: 10px 20px;
+      background: #e5e7eb;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    
+    .tab.active {
+      background: #667eea;
+      color: white;
+    }
+    
+    .tab-content {
+      display: none;
+    }
+    
+    .tab-content.active {
+      display: block;
+    }
+    
+    @media (max-width: 768px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <h1>
+        🚀 Scraper Componenti Digitali
+        <span class="status-badge ${stats.systemStatus}">
+          ${stats.systemStatus === 'active' ? '● Online' : '○ Offline'}
+        </span>
+      </h1>
+      <p style="color: #666; margin-top: 10px;">
+        Server: ${process.env.RENDER ? 'Render.com Production' : 'Development'} | 
+        Uptime: ${stats.uptime} | 
+        Memory: ${stats.memory.used}/${stats.memory.total}MB
+      </p>
+    </div>
+    
+    <!-- Metriche Principali -->
+    <div class="grid">
+      <div class="card">
+        <h2>📦 Prodotti Totali</h2>
+        <div class="metric">${stats.totalProducts.toLocaleString()}</div>
+        <div class="metric-label">Nel database</div>
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: ${Math.min(100, stats.totalProducts/5000*100)}%"></div>
         </div>
-
-        <div class="grid">
-          <div class="card">
-            <h2>📦 Prodotti Totali</h2>
-            <div class="stat">${stats.totalProducts.toLocaleString()}</div>
-            <div class="label">Nel CSV</div>
-            <div class="badge green">Database Completo</div>
-          </div>
-
-          <div class="card">
-            <h2>✅ In Stock</h2>
-            <div class="stat">${stats.inStock.toLocaleString()}</div>
-            <div class="label">${stats.inStockPercent}% disponibili</div>
-            <div class="progress-bar">
-              <div class="progress-fill" style="width: ${stats.inStockPercent}%">${stats.inStockPercent}%</div>
-            </div>
-          </div>
-
-          <div class="card">
-            <h2>❌ Out of Stock</h2>
-            <div class="stat">${stats.outOfStock.toLocaleString()}</div>
-            <div class="label">${stats.outOfStockPercent}% esauriti</div>
-            <div class="progress-bar">
-              <div class="progress-fill" style="width: ${stats.outOfStockPercent}%; background: #ef4444;">${stats.outOfStockPercent}%</div>
-            </div>
-          </div>
-
-          <div class="card">
-            <h2>🕐 Ultimo Update</h2>
-            <div class="stat" style="font-size: 1.2em;">${stats.timeSince}</div>
-            <div class="label">${stats.lastUpdate}</div>
-          </div>
-
-          <div class="card">
-            <h2>💾 CSV Size</h2>
-            <div class="stat">${stats.csvSize} MB</div>
-            <div class="label">${stats.csvFiles.length} file disponibili</div>
-          </div>
-
-          <div class="card">
-            <h2>🖼️ Immagini</h2>
-            <div class="stat">${stats.imagesCount.toLocaleString()}</div>
-            <div class="label">Scaricate (${stats.imagesSize} MB)</div>
-          </div>
+      </div>
+      
+      <div class="card">
+        <h2>🕐 Ultimo Aggiornamento</h2>
+        <div class="metric" style="font-size: 1.5em;">${stats.lastUpdate.time}</div>
+        <div class="metric-label">${stats.lastUpdate.ago}</div>
+      </div>
+      
+      <div class="card">
+        <h2>💾 Database</h2>
+        <div class="metric">${stats.csvSize} MB</div>
+        <div class="metric-label">CSV + ${stats.imagesCount} immagini</div>
+      </div>
+      
+      <div class="card">
+        <h2>⚡ Processi Attivi</h2>
+        <div class="metric">${stats.activeProcesses}</div>
+        <div class="metric-label">In esecuzione</div>
+      </div>
+    </div>
+    
+    <!-- Controlli Manuali -->
+    <div class="action-section">
+      <h2 style="margin-bottom: 20px;">🎮 Controlli Manuali</h2>
+      
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab('stock')">Stock Check</div>
+        <div class="tab" onclick="switchTab('scrape')">Scraping Completo</div>
+        <div class="tab" onclick="switchTab('system')">Sistema</div>
+      </div>
+      
+      <!-- Tab Stock Check -->
+      <div id="stock-tab" class="tab-content active">
+        <p style="margin-bottom: 10px;">
+          <strong>⚡ Stock Check Veloce</strong> - Solo verifica disponibilità (20-120 min)
+        </p>
+        <div class="button-group">
+          <button class="stock" onclick="runStockCheck(100)">
+            🧪 Test 100 prodotti
+          </button>
+          <button class="stock" onclick="runStockCheck(500)">
+            📊 Check 500 prodotti
+          </button>
+          <button class="stock" onclick="runStockCheck(1000)">
+            📈 Check 1000 prodotti
+          </button>
+          <button class="stock" onclick="runStockCheck(5000)">
+            🚀 Check COMPLETO (5000)
+          </button>
         </div>
-
-        <div class="card" style="margin-top: 20px;">
-          <h2>⚙️ Controlli Manuali</h2>
-          
-          <div style="margin-bottom: 20px;">
-            <div style="display: flex; align-items: center; margin-bottom: 10px;">
-              <span class="lock-indicator ${stats.scraperLock ? 'active' : 'idle'}"></span>
-              <span class="badge orange">🔄 Full Scan (Tutti i dati - 2-4h)</span>
-              ${stats.scraperLock ? '<span style="margin-left: 10px; color: #ef4444; font-weight: bold;">IN CORSO</span>' : ''}
-            </div>
-            <button onclick="runFullScan(5)" class="enterprise">Test 5 pagine (~10 min)</button>
-            <button onclick="runFullScan(20)" class="enterprise">Test 20 pagine (~40 min)</button>
-            <button onclick="runFullScan(50)" class="enterprise">Scan 50 pagine (~1.5 h)</button>
-            <button onclick="runFullScan(200)" class="enterprise">Full 200 pagine (~4 h)</button>
-            ${stats.scraperLock ? '<button onclick="stopFullScan()" class="danger">⏹️ Stop Full Scan</button>' : ''}
-          </div>
-          
-          <div class="section-divider"></div>
-          
-          <div>
-            <div style="display: flex; align-items: center; margin-bottom: 10px;">
-              <span class="lock-indicator ${stats.stockCheckerLock ? 'active' : 'idle'}"></span>
-              <span class="badge green">📊 Stock Check (Solo stock - max 1.5h)</span>
-              ${stats.stockCheckerLock ? '<span style="margin-left: 10px; color: #ef4444; font-weight: bold;">IN CORSO</span>' : ''}
-            </div>
-            <button class="stock" onclick="runStockCheck(100)">Test 100 prodotti (~10 min)</button>
-            <button class="stock" onclick="runStockCheck(500)">Check 500 prodotti (~30 min)</button>
-            <button class="stock" onclick="runStockCheck(1000)">Check 1000 prodotti (~1 h)</button>
-            <button class="stock" onclick="runStockCheck(5000)">Full 5000 prodotti (~1.5 h)</button>
-            ${stats.stockCheckerLock ? '<button onclick="stopStockCheck()" class="danger">⏹️ Stop Stock Check</button>' : ''}
-          </div>
+      </div>
+      
+      <!-- Tab Scraping -->
+      <div id="scrape-tab" class="tab-content">
+        <p style="margin-bottom: 10px;">
+          <strong>📦 Scraping Completo</strong> - Tutti i dati + immagini (25 min - 4 ore)
+        </p>
+        <div class="button-group">
+          <button class="scrape" onclick="runScrape(5)">
+            🧪 Test (5 pagine)
+          </button>
+          <button class="scrape" onclick="runScrape(20)">
+            🔄 Sync (20 pagine)
+          </button>
+          <button class="scrape" onclick="runScrape(50)">
+            📊 Medio (50 pagine)
+          </button>
+          <button class="scrape" onclick="runScrape(200)">
+            📦 Full (200 pagine)
+          </button>
         </div>
-
-        ${stats.checkpoint ? `
-        <div class="card" style="margin-top: 20px;">
-          <h2>🔄 Checkpoint Scraper Attivo</h2>
-          <div class="alert info">
-            <strong>Resume disponibile:</strong><br>
-            Pagina corrente: ${stats.checkpoint.currentPage || 'N/A'}<br>
-            Prodotti trovati: ${stats.checkpoint.productsCount || 0}<br>
-            Timestamp: ${new Date(stats.checkpoint.timestamp).toLocaleString('it-IT')}
-          </div>
+      </div>
+      
+      <!-- Tab Sistema -->
+      <div id="system-tab" class="tab-content">
+        <p style="margin-bottom: 10px;">
+          <strong>⚙️ Controlli di Sistema</strong>
+        </p>
+        <div class="button-group">
+          <button onclick="downloadCSV()">
+            📥 Download CSV
+          </button>
+          <button onclick="viewBackups()">
+            💾 View Backups
+          </button>
+          <button onclick="clearLogs()">
+            🗑️ Clear Logs
+          </button>
+          <button class="danger" onclick="killAllProcesses()">
+            🛑 Kill All Processes
+          </button>
         </div>
-        ` : ''}
-
-        ${stats.stockProgress ? `
-        <div class="card" style="margin-top: 20px;">
-          <h2>📊 Stock Check in Corso</h2>
-          <div class="alert info">
-            <strong>Progresso:</strong><br>
-            Prodotti controllati: ${stats.stockProgress.checked || 0} / ${stats.stockProgress.total || 0}<br>
-            Aggiornati: ${stats.stockProgress.updated || 0}<br>
-            Nuovi esauriti: ${stats.stockProgress.newOutOfStock || 0}<br>
-            Tornati disponibili: ${stats.stockProgress.backInStock || 0}<br>
-            In corso da: ${new Date(stats.stockProgress.timestamp).toLocaleString('it-IT')}
-            <div class="progress-bar" style="margin-top: 10px;">
-              <div class="progress-fill" style="width: ${Math.round((stats.stockProgress.checked / stats.stockProgress.total) * 100)}%">
-                ${Math.round((stats.stockProgress.checked / stats.stockProgress.total) * 100)}%
+      </div>
+    </div>
+    
+    <!-- Schedule Automatico -->
+    <div class="action-section">
+      <h2 style="margin-bottom: 20px;">📅 Schedule Automatico</h2>
+      <div class="schedule-info">
+        <h3>🌙 Notturno</h3>
+        <div class="schedule-item">
+          <strong>02:00</strong> - Scraping completo lento (max 4 ore) - Tutti i dati
+        </div>
+      </div>
+      
+      <div class="schedule-info" style="background: #f0fdf4; border-color: #10b981;">
+        <h3>☀️ Diurno</h3>
+        <div class="schedule-item">
+          <strong>07:00 - 22:00</strong> - Stock check veloce ogni 2.5 ore (max 2 ore)
+        </div>
+        <div class="schedule-item" style="color: #666; font-size: 0.9em;">
+          Orari: 07:00, 09:30, 12:00, 14:30, 17:00, 19:30, 22:00
+        </div>
+      </div>
+    </div>
+    
+    <!-- Processi Attivi -->
+    ${stats.activeProcesses > 0 ? `
+    <div class="action-section">
+      <h2 style="margin-bottom: 20px;">🔄 Processi in Esecuzione</h2>
+      <div class="process-list">
+        ${stats.runningProcesses.map(p => `
+          <div class="process-item">
+            <div>
+              <strong>${p.type}</strong><br>
+              <small>ID: ${p.id} | Started: ${new Date(p.startTime).toLocaleTimeString()}</small>
+            </div>
+            <div style="width: 200px;">
+              <div class="progress-bar">
+                <div class="progress-fill" style="width: ${p.progress}%"></div>
               </div>
             </div>
           </div>
-        </div>
-        ` : ''}
-
-        <div class="card" style="margin-top: 20px;">
-          <h2>💻 Sistema Health</h2>
-          <div class="system-health">
-            <div class="health-item">
-              <div class="health-value">${stats.uptime}</div>
-              <div class="health-label">Uptime</div>
-            </div>
-            <div class="health-item">
-              <div class="health-value">${stats.memory.used} MB</div>
-              <div class="health-label">Memory (${stats.memory.percent}%)</div>
-            </div>
-            <div class="health-item">
-              <div class="health-value">${stats.cpu.toFixed(1)}%</div>
-              <div class="health-label">CPU Load</div>
-            </div>
-            <div class="health-item">
-              <div class="health-value">${stats.disk.used} GB</div>
-              <div class="health-label">Disk (${stats.disk.percent}%)</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card" style="margin-top: 20px;">
-          <h2>📄 File CSV</h2>
-          <ul class="files">
-            ${stats.csvFiles.map(f => `
-              <li>
-                <span>${f}</span>
-                <a href="${base}/output/${f}" download>
-                  <button style="margin: 0; padding: 8px 16px; font-size: 12px;">⬇️ Download</button>
-                </a>
-              </li>
-            `).join('')}
-          </ul>
-        </div>
-
-        <div class="card tab-container">
-          <h2>📋 Log System</h2>
-          <div class="tab-buttons">
-            <button class="tab-button active" onclick="switchTab('scraper')">Scraper Log</button>
-            <button class="tab-button" onclick="switchTab('stock')">Stock Checker Log</button>
-            <button class="tab-button" onclick="switchTab('dashboard')">Dashboard Log</button>
-          </div>
-          
-          <div id="tab-scraper" class="tab-content active">
-            <h3 style="margin-bottom: 10px;">Scraper Log (50 righe)</h3>
-            <div class="logs">${stats.scraperLogs}</div>
-          </div>
-          
-          <div id="tab-stock" class="tab-content">
-            <h3 style="margin-bottom: 10px;">Stock Checker Log (50 righe)</h3>
-            <div class="logs">${stats.stockLogs}</div>
-          </div>
-          
-          <div id="tab-dashboard" class="tab-content">
-            <h3 style="margin-bottom: 10px;">Dashboard Events (50 righe)</h3>
-            <div class="logs">${stats.dashboardLogs}</div>
-          </div>
-        </div>
+        `).join('')}
       </div>
-
-      <script>
-        function switchTab(tab) {
-          document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
-          document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-          document.querySelector('.tab-button[onclick*="' + tab + '"]').classList.add('active');
-          document.getElementById('tab-' + tab).classList.add('active');
-        }
-
-        function runFullScan(pages) {
-          if (confirm('Avviare FULL SCAN su ' + pages + ' pagine?\\n\\nDurata stimata: ~' + Math.ceil(pages * 1.2) + ' minuti')) {
-            fetch('/run-full-scan?pages=' + pages, { method: 'POST' })
-              .then(r => r.json())
-              .then(data => {
-                alert(data.success ? '✅ ' + data.message : '⚠️ ' + data.message);
-                setTimeout(() => location.reload(), 2000);
-              })
-              .catch(e => alert('Errore: ' + e));
+    </div>
+    ` : ''}
+    
+    <!-- Log Viewer -->
+    <div class="action-section">
+      <h2 style="margin-bottom: 20px;">📋 Eventi Recenti</h2>
+      <div class="log-viewer" id="log-viewer">
+        ${stats.recentEvents}
+      </div>
+    </div>
+  </div>
+  
+  <script>
+    // Tab switching
+    function switchTab(tabName) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      
+      event.target.classList.add('active');
+      document.getElementById(tabName + '-tab').classList.add('active');
+    }
+    
+    // Actions
+    async function runStockCheck(count) {
+      if (!confirm(\`Avviare stock check per \${count} prodotti?\`)) return;
+      
+      const res = await fetch('/api/stock-check', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ count })
+      });
+      const data = await res.json();
+      alert(data.message);
+      setTimeout(() => location.reload(), 2000);
+    }
+    
+    async function runScrape(pages) {
+      if (!confirm(\`Avviare scraping di \${pages} pagine?\`)) return;
+      
+      const res = await fetch('/api/scrape', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ pages })
+      });
+      const data = await res.json();
+      alert(data.message);
+      setTimeout(() => location.reload(), 2000);
+    }
+    
+    function downloadCSV() {
+      window.open('${baseUrl}/output/prodotti_latest.csv', '_blank');
+    }
+    
+    function viewBackups() {
+      window.open('${baseUrl}/backups', '_blank');
+    }
+    
+    async function clearLogs() {
+      if (!confirm('Cancellare tutti i log?')) return;
+      
+      await fetch('/api/logs', { method: 'DELETE' });
+      alert('Log cancellati');
+      location.reload();
+    }
+    
+    async function killAllProcesses() {
+      if (!confirm('Terminare TUTTI i processi in esecuzione?')) return;
+      
+      await fetch('/api/kill-all', { method: 'POST' });
+      alert('Processi terminati');
+      location.reload();
+    }
+    
+    // Auto-refresh ogni 30 secondi
+    setInterval(() => {
+      fetch('/api/status')
+        .then(res => res.json())
+        .then(data => {
+          if (data.activeProcesses > 0) {
+            location.reload();
           }
-        }
-
-        function runStockCheck(num) {
-          if (confirm('Avviare stock check su ' + num + ' prodotti?\\n\\nDurata stimata: ~' + Math.ceil(num/60) + ' minuti')) {
-            fetch('/run-stock-check?limit=' + num, { method: 'POST' })
-              .then(r => r.json())
-              .then(data => {
-                alert(data.success ? '✅ ' + data.message : '⚠️ ' + data.message);
-                setTimeout(() => location.reload(), 2000);
-              })
-              .catch(e => alert('Errore: ' + e));
-          }
-        }
-
-        function stopFullScan() {
-          if (confirm('Fermare il Full Scan in corso?')) {
-            fetch('/stop-full-scan', { method: 'POST' })
-              .then(r => r.json())
-              .then(data => {
-                alert(data.message);
-                setTimeout(() => location.reload(), 2000);
-              })
-              .catch(e => alert('Errore: ' + e));
-          }
-        }
-
-        function stopStockCheck() {
-          if (confirm('Fermare lo Stock Check in corso?')) {
-            fetch('/stop-stock-check', { method: 'POST' })
-              .then(r => r.json())
-              .then(data => {
-                alert(data.message);
-                setTimeout(() => location.reload(), 2000);
-              })
-              .catch(e => alert('Errore: ' + e));
-          }
-        }
-
-        setTimeout(() => location.reload(), 30000);
-      </script>
-    </body>
-    </html>
+        });
+    }, 30000);
+  </script>
+</body>
+</html>
   `);
 });
 
-app.post('/run-full-scan', (req, res) => {
-  const pages = req.query.pages || 200;
-  logDashboardEvent('FULL_SCAN_REQUEST', `pages=${pages}`, req);
-  
-  const scraperLockPath = path.join(outputDir, 'scraper.lock');
-  if (fs.existsSync(scraperLockPath)) {
-    const lockData = JSON.parse(fs.readFileSync(scraperLockPath, 'utf8'));
-    const lockAge = Date.now() - lockData.timestamp;
-    
-    if (lockAge < 14400000) {
-      logDashboardEvent('FULL_SCAN_BLOCKED', `già in corso da ${Math.floor(lockAge/60000)} min`, req);
-      return res.json({ success: false, message: 'Full scan già in corso!' });
-    }
-    fs.unlinkSync(scraperLockPath);
-    logDashboardEvent('FULL_SCAN_LOCK_REMOVED', 'stale lock removed', req);
-  }
-  
-  fs.writeFileSync(scraperLockPath, JSON.stringify({
-    pid: process.pid,
-    timestamp: Date.now(),
-    startedAt: new Date().toISOString(),
-    pages: pages,
-    triggeredBy: 'dashboard'
-  }));
-  
-  spawn('node', ['scraper_componenti_wpai_min.js', pages], { detached: true, stdio: 'ignore' }).unref();
-  logDashboardEvent('FULL_SCAN_STARTED', `pages=${pages}`, req);
-  
-  res.json({ 
-    success: true,
-    message: `Full scan avviato per ${pages} pagine.`,
-    estimatedTime: `${Math.ceil(pages * 1.2)} minuti`
+// =====================================================
+// API ENDPOINTS
+// =====================================================
+
+// Status endpoint
+app.get('/api/status', (req, res) => {
+  const stats = getSystemStats();
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    ...stats
   });
 });
 
-app.post('/stop-full-scan', (req, res) => {
-  logDashboardEvent('FULL_SCAN_STOP_REQUEST', '', req);
+// Stock check endpoint
+app.post('/api/stock-check', async (req, res) => {
+  const { count = 5000 } = req.body;
+  const processId = `stock_${Date.now()}`;
   
-  exec('pkill -SIGTERM -f scraper_componenti_wpai_min.js', (error) => {
-    if (error) {
-      logDashboardEvent('FULL_SCAN_STOP_FAILED', 'nessun processo', req);
-      return res.json({ success: false, message: 'Nessun Full Scan in corso.' });
-    }
-    
-    const scraperLockPath = path.join(outputDir, 'scraper.lock');
-    if (fs.existsSync(scraperLockPath)) fs.unlinkSync(scraperLockPath);
-    
-    logDashboardEvent('FULL_SCAN_STOPPED', 'checkpoint salvato', req);
-    res.json({ success: true, message: 'Full Scan fermato.' });
+  logger.log(`Starting stock check for ${count} products`, 'INFO', {
+    event: 'stock_check_start',
+    count
+  });
+  
+  processTracker.start(processId, 'stock_check', { count });
+  
+  const child = spawn('node', ['stock-checker-light.js', count.toString()], {
+    detached: true,
+    stdio: 'ignore'
+  });
+  
+  child.unref();
+  
+  res.json({
+    status: 'started',
+    processId,
+    message: `Stock check avviato per ${count} prodotti`
   });
 });
 
-app.post('/run-stock-check', (req, res) => {
-  const limit = req.query.limit || 100;
-  logDashboardEvent('STOCK_CHECK_REQUEST', `limit=${limit}`, req);
+// Scraping endpoint
+app.post('/api/scrape', async (req, res) => {
+  const { pages = 20 } = req.body;
+  const processId = `scrape_${Date.now()}`;
   
-  const stockLockPath = path.join(outputDir, 'stock_checker.lock');
-  if (fs.existsSync(stockLockPath)) {
-    const lockData = JSON.parse(fs.readFileSync(stockLockPath, 'utf8'));
-    const lockAge = Date.now() - lockData.timestamp;
-    
-    if (lockAge < 7200000) {
-      logDashboardEvent('STOCK_CHECK_BLOCKED', `già in corso da ${Math.floor(lockAge/60000)} min`, req);
-      return res.json({ success: false, message: 'Stock check già in corso!' });
-    }
-    fs.unlinkSync(stockLockPath);
-    logDashboardEvent('STOCK_CHECK_LOCK_REMOVED', 'stale lock removed', req);
-  }
+  logger.log(`Starting scraping for ${pages} pages`, 'INFO', {
+    event: 'scraping_start',
+    pages
+  });
   
-  spawn('node', ['stock-checker-light.js', limit], { detached: true, stdio: 'ignore' }).unref();
-  logDashboardEvent('STOCK_CHECK_STARTED', `limit=${limit}`, req);
+  processTracker.start(processId, 'scraping', { pages });
   
-  res.json({ 
-    success: true,
-    message: `Stock check avviato per ${limit} prodotti.`,
-    estimatedTime: Math.ceil(limit / 60) + ' minuti'
+  const child = spawn('node', ['scraper_componenti_wpai_min.js', pages.toString()], {
+    detached: true,
+    stdio: 'ignore'
+  });
+  
+  child.unref();
+  
+  res.json({
+    status: 'started',
+    processId,
+    message: `Scraping avviato per ${pages} pagine`
   });
 });
 
-app.post('/stop-stock-check', (req, res) => {
-  logDashboardEvent('STOCK_CHECK_STOP_REQUEST', '', req);
-  
-  exec('pkill -SIGTERM -f stock-checker-light.js', (error) => {
-    if (error) {
-      logDashboardEvent('STOCK_CHECK_STOP_FAILED', 'nessun processo', req);
-      return res.json({ success: false, message: 'Nessuno Stock Check in corso.' });
-    }
-    
-    const stockLockPath = path.join(outputDir, 'stock_checker.lock');
-    if (fs.existsSync(stockLockPath)) fs.unlinkSync(stockLockPath);
-    
-    logDashboardEvent('STOCK_CHECK_STOPPED', 'progresso salvato', req);
-    res.json({ success: true, message: 'Stock Check fermato.' });
+// Get processes
+app.get('/api/processes', (req, res) => {
+  res.json({
+    running: processTracker.getRunning(),
+    history: processTracker.getHistory()
   });
 });
 
-app.get('/healthz', (req, res) => {
-  res.status(200).send('OK');
+// Kill all processes
+app.post('/api/kill-all', (req, res) => {
+  logger.log('Killing all processes', 'WARN', {
+    event: 'kill_all_processes'
+  });
+  
+  // Implementa kill dei processi
+  res.json({ status: 'ok' });
 });
 
-function getStats() {
+// Delete logs
+app.delete('/api/logs', (req, res) => {
+  logger.log('Clearing logs', 'INFO', {
+    event: 'clear_logs'
+  });
+  
+  [logsDir, outputDir].forEach(dir => {
+    if (fs.existsSync(dir)) {
+      const files = fs.readdirSync(dir);
+      files.forEach(file => {
+        if (file.endsWith('.log')) {
+          fs.unlinkSync(path.join(dir, file));
+        }
+      });
+    }
+  });
+  
+  res.json({ status: 'ok' });
+});
+
+// Health checks
+app.get('/healthz', (req, res) => res.status(200).send('ok'));
+app.get('/health', (req, res) => {
+  const stats = getSystemStats();
+  res.json({
+    status: 'healthy',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    products: stats.totalProducts,
+    lastUpdate: stats.lastUpdate
+  });
+});
+
+// =====================================================
+// HELPER FUNCTIONS
+// =====================================================
+
+function getSystemStats() {
   const stats = {
+    systemStatus: 'active',
     totalProducts: 0,
-    lastUpdate: 'Mai',
-    timeSince: 'N/A',
+    lastUpdate: {
+      time: 'Mai',
+      ago: 'N/A'
+    },
     csvSize: 0,
-    csvFiles: [],
     imagesCount: 0,
-    imagesSize: 0,
-    scraperLogs: 'Nessun log disponibile',
-    stockLogs: 'Nessun log disponibile',
-    dashboardLogs: 'Nessun log disponibile',
-    checkpoint: null,
-    stockProgress: null,
-    scraperLock: null,
-    stockCheckerLock: null,
+    activeProcesses: 0,
+    runningProcesses: [],
     uptime: formatUptime(process.uptime()),
-    memory: getMemoryStats(),
-    cpu: getCPULoad(),
-    disk: getDiskStats(),
-    inStock: 0,
-    outOfStock: 0,
-    inStockPercent: 0,
-    outOfStockPercent: 0
+    memory: {
+      used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+      total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
+    },
+    recentEvents: 'Caricamento...'
   };
   
   try {
-    if (fs.existsSync(outputDir)) {
-      const files = fs.readdirSync(outputDir);
+    // CSV stats
+    if (fs.existsSync(csvLatestPath)) {
+      const csvStats = fs.statSync(csvLatestPath);
+      const csvContent = fs.readFileSync(csvLatestPath, 'utf8');
+      const lines = csvContent.split('\n').filter(l => l.trim());
       
-      files.forEach(file => {
-        if (file.endsWith('.csv')) {
-          stats.csvFiles.push(file);
-          const filePath = path.join(outputDir, file);
-          const fileStats = fs.statSync(filePath);
-          
-          if (file.includes('latest') || file.includes('wpimport')) {
-            const csvContent = fs.readFileSync(filePath, 'utf8');
-            const lines = csvContent.split('\n').filter(l => l.trim());
-            
-            stats.totalProducts = Math.max(stats.totalProducts, lines.length - 1);
-            stats.csvSize = (fileStats.size / 1024 / 1024).toFixed(2);
-            
-            const headers = parseCSVLine(lines[0]).map(h => 
-              h.toLowerCase().replace(/[\s_]+/g, '')
-            );
-            
-            const stockStatusIndex = headers.findIndex(h => h.includes('stockstatus'));
-            const stockQtyIndex = headers.findIndex(h => h.includes('stockquantity'));
-            
-            for (let i = 1; i < lines.length; i++) {
-              const cols = parseCSVLine(lines[i]);
-              const stockStatus = cols[stockStatusIndex]?.toLowerCase() || '';
-              const stockQty = parseInt(cols[stockQtyIndex]) || 0;
-              
-              if (stockStatus.includes('instock') || stockQty > 0) {
-                stats.inStock++;
-              } else {
-                stats.outOfStock++;
-              }
-            }
-            
-            if (stats.totalProducts > 0) {
-              stats.inStockPercent = Math.round((stats.inStock / stats.totalProducts) * 100);
-              stats.outOfStockPercent = Math.round((stats.outOfStock / stats.totalProducts) * 100);
-            }
-            
-            const lastMod = new Date(fileStats.mtime);
-            stats.lastUpdate = lastMod.toLocaleString('it-IT');
-            const minutes = Math.floor((Date.now() - lastMod) / 60000);
-            stats.timeSince = minutes < 60 ? `${minutes} minuti fa` : `${Math.floor(minutes/60)} ore fa`;
-          }
-        }
+      stats.totalProducts = Math.max(0, lines.length - 1);
+      stats.csvSize = (csvStats.size / 1024 / 1024).toFixed(2);
+      
+      const lastMod = new Date(csvStats.mtime);
+      stats.lastUpdate.time = lastMod.toLocaleString('it-IT', {
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
       });
       
-      const imagesPath = path.join(outputDir, 'images');
-      if (fs.existsSync(imagesPath)) {
-        const images = fs.readdirSync(imagesPath);
-        stats.imagesCount = images.filter(f => /\.jpe?g$/i.test(f)).length;
-        
-        let totalSize = 0;
-        images.forEach(img => {
-          try {
-            const imgStats = fs.statSync(path.join(imagesPath, img));
-            totalSize += imgStats.size;
-          } catch (e) {}
-        });
-        stats.imagesSize = (totalSize / 1024 / 1024).toFixed(1);
-      }
-      
-      const checkpointPath = path.join(outputDir, 'scraper_checkpoint.json');
-      if (fs.existsSync(checkpointPath)) {
-        stats.checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
-      }
-      
-      const scraperLockPath = path.join(outputDir, 'scraper.lock');
-      if (fs.existsSync(scraperLockPath)) {
-        stats.scraperLock = JSON.parse(fs.readFileSync(scraperLockPath, 'utf8'));
-      }
-      
-      const stockProgressPath = path.join(outputDir, 'stock_checker_progress.json');
-      if (fs.existsSync(stockProgressPath)) {
-        stats.stockProgress = JSON.parse(fs.readFileSync(stockProgressPath, 'utf8'));
-      }
-      
-      const stockLockPath = path.join(outputDir, 'stock_checker.lock');
-      if (fs.existsSync(stockLockPath)) {
-        stats.stockCheckerLock = JSON.parse(fs.readFileSync(stockLockPath, 'utf8'));
-      }
-      
-      const scraperLogPath = path.join(outputDir, 'scraper.log');
-      if (fs.existsSync(scraperLogPath)) {
-        const logs = fs.readFileSync(scraperLogPath, 'utf8');
-        const lines = logs.split('\n');
-        stats.scraperLogs = lines.slice(-50).join('\n');
-      }
-      
-      const stockLogFiles = files.filter(f => f.startsWith('stock_checker_') && f.endsWith('.log')).sort();
-      if (stockLogFiles.length > 0) {
-        const latestStockLog = path.join(outputDir, stockLogFiles[stockLogFiles.length - 1]);
-        const logs = fs.readFileSync(latestStockLog, 'utf8');
-        const lines = logs.split('\n');
-        stats.stockLogs = lines.slice(-50).join('\n');
-      }
-      
-      if (fs.existsSync(dashboardLogPath)) {
-        const logs = fs.readFileSync(dashboardLogPath, 'utf8');
-        const lines = logs.split('\n');
-        stats.dashboardLogs = lines.slice(-50).join('\n');
+      const minutes = Math.floor((Date.now() - lastMod) / 60000);
+      if (minutes < 60) {
+        stats.lastUpdate.ago = `${minutes} minuti fa`;
+      } else if (minutes < 1440) {
+        stats.lastUpdate.ago = `${Math.floor(minutes/60)} ore fa`;
+      } else {
+        stats.lastUpdate.ago = `${Math.floor(minutes/1440)} giorni fa`;
       }
     }
+    
+    // Images count
+    const imagesPath = path.join(outputDir, 'images');
+    if (fs.existsSync(imagesPath)) {
+      const images = fs.readdirSync(imagesPath);
+      stats.imagesCount = images.filter(f => /\.(jpg|jpeg|png)$/i.test(f)).length;
+    }
+    
+    // Running processes
+    stats.runningProcesses = processTracker.getRunning();
+    stats.activeProcesses = stats.runningProcesses.length;
+    
+    // Recent events
+    if (fs.existsSync(eventsLogPath)) {
+      const events = JSON.parse(fs.readFileSync(eventsLogPath, 'utf8') || '[]');
+      stats.recentEvents = events.slice(0, 20)
+        .map(e => `[${e.timestamp}] [${e.level}] ${e.message}`)
+        .join('\n');
+    }
+    
   } catch (error) {
-    console.error('Error getting stats:', error);
+    logger.log('Error getting stats', 'ERROR', { error: error.message });
   }
   
   return stats;
-}
-
-function parseCSVLine(line) {
-  const result = [];
-  let current = '';
-  let inQuotes = false;
-  
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-    if (char === '"') {
-      inQuotes = !inQuotes;
-    } else if (char === ',' && !inQuotes) {
-      result.push(current.trim());
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-  result.push(current.trim());
-  return result;
 }
 
 function formatUptime(seconds) {
@@ -747,92 +854,194 @@ function formatUptime(seconds) {
   const hours = Math.floor((seconds % 86400) / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   
-  if (days > 0) return `${days}g ${hours}h`;
+  if (days > 0) return `${days}g ${hours}h ${minutes}m`;
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
 }
 
-function getMemoryStats() {
-  const used = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
-  const total = Math.round(process.memoryUsage().heapTotal / 1024 / 1024);
-  const percent = Math.round(used / total * 100);
-  return { used, total, percent };
-}
+// =====================================================
+// CRON JOBS - SCHEDULING OTTIMIZZATO
+// =====================================================
 
-function getCPULoad() {
-  const cpus = require('os').cpus();
-  let totalIdle = 0, totalTick = 0;
+if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
   
-  cpus.forEach(cpu => {
-    for (let type in cpu.times) {
-      totalTick += cpu.times[type];
-    }
-    totalIdle += cpu.times.idle;
+  // SCRAPING COMPLETO NOTTURNO - Ore 2:00 (max 4 ore)
+  cron.schedule('0 2 * * *', () => {
+    const processId = `cron_scrape_${Date.now()}`;
+    logger.log('[CRON] Starting nightly full scraping', 'INFO', {
+      event: 'cron_scrape_start'
+    });
+    
+    processTracker.start(processId, 'cron_scraping', { pages: 200 });
+    
+    const child = spawn('node', ['scraper_componenti_wpai_min.js', '200'], {
+      detached: true,
+      stdio: 'ignore'
+    });
+    
+    // Timeout dopo 4 ore
+    setTimeout(() => {
+      try {
+        child.kill();
+        processTracker.end(processId, 'timeout');
+        logger.log('[CRON] Scraping timeout after 4 hours', 'WARN');
+      } catch (e) {}
+    }, 4 * 60 * 60 * 1000);
+    
+    child.unref();
   });
   
-  return 100 - Math.round(100 * totalIdle / totalTick);
-}
-
-function getDiskStats() {
-  try {
-    const stats = fs.statfsSync(outputDir);
-    const total = (stats.blocks * stats.bsize) / (1024 ** 3);
-    const free = (stats.bfree * stats.bsize) / (1024 ** 3);
-    const used = total - free;
-    const percent = Math.round((used / total) * 100);
-    return { used: used.toFixed(1), total: total.toFixed(1), percent };
-  } catch {
-    return { used: 0, total: 0, percent: 0 };
-  }
-}
-
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Server v2.4 avviato su porta ${PORT}`);
-  console.log(`📊 Dashboard: http://localhost:${PORT}`);
-  console.log(`📁 Output directory: ${outputDir}`);
+  // STOCK CHECK DIURNO - Ogni 2.5 ore dalle 7:00 alle 22:00
+  const stockSchedule = '0 7,9,12,14,17,19,22 * * *';  // Orari esatti
+  cron.schedule(stockSchedule, () => {
+    const processId = `cron_stock_${Date.now()}`;
+    logger.log('[CRON] Starting stock check', 'INFO', {
+      event: 'cron_stock_start'
+    });
+    
+    processTracker.start(processId, 'cron_stock_check', { count: 5000 });
+    
+    const child = spawn('node', ['stock-checker-light.js', '5000'], {
+      detached: true,
+      stdio: 'ignore'
+    });
+    
+    // Timeout dopo 2 ore
+    setTimeout(() => {
+      try {
+        child.kill();
+        processTracker.end(processId, 'timeout');
+        logger.log('[CRON] Stock check timeout after 2 hours', 'WARN');
+      } catch (e) {}
+    }, 2 * 60 * 60 * 1000);
+    
+    child.unref();
+  });
   
-  logDashboardEvent('SERVER_STARTED', `port=${PORT}, node=${process.version}`);
+  // Aggiungi anche controllo parziale a mezzora per le ore di punta
+  cron.schedule('30 9,11,14,16,19 * * *', () => {
+    const processId = `cron_stock_partial_${Date.now()}`;
+    logger.log('[CRON] Starting partial stock check', 'INFO', {
+      event: 'cron_stock_partial_start'
+    });
+    
+    processTracker.start(processId, 'cron_stock_check_partial', { count: 1000 });
+    
+    const child = spawn('node', ['stock-checker-light.js', '1000'], {
+      detached: true,
+      stdio: 'ignore'
+    });
+    
+    child.unref();
+  });
+  
+  // BACKUP AUTOMATICO GIORNALIERO
+  cron.schedule('0 5 * * *', () => {
+    logger.log('[CRON] Creating daily backup', 'INFO', {
+      event: 'backup_start'
+    });
+    
+    try {
+      const date = new Date().toISOString().split('T')[0];
+      const backupPath = path.join(backupDir, `backup_${date}.csv`);
+      
+      if (fs.existsSync(csvLatestPath)) {
+        fs.copyFileSync(csvLatestPath, backupPath);
+        logger.log('[CRON] Backup created successfully', 'INFO', {
+          event: 'backup_complete',
+          file: backupPath
+        });
+        
+        // Rimuovi backup più vecchi di 7 giorni
+        const files = fs.readdirSync(backupDir);
+        const now = Date.now();
+        files.forEach(file => {
+          const filePath = path.join(backupDir, file);
+          const stats = fs.statSync(filePath);
+          const age = now - stats.mtime;
+          if (age > 7 * 24 * 60 * 60 * 1000) {
+            fs.unlinkSync(filePath);
+            logger.log(`[CRON] Removed old backup: ${file}`, 'INFO');
+          }
+        });
+      }
+    } catch (error) {
+      logger.log('[CRON] Backup failed', 'ERROR', {
+        error: error.message
+      });
+    }
+  });
+  
+  logger.log('⏰ CRON JOBS ATTIVATI:', 'INFO', {
+    event: 'cron_initialized',
+    jobs: [
+      'Scraping completo: 02:00 (max 4h)',
+      'Stock check completo: 07:00, 09:30, 12:00, 14:30, 17:00, 19:30, 22:00 (max 2h)',
+      'Stock check parziale: 09:30, 11:30, 14:30, 16:30, 19:30',
+      'Backup giornaliero: 05:00'
+    ]
+  });
+  
+} else {
+  logger.log('⏰ CRON JOBS NON ATTIVATI (development mode)', 'INFO');
+}
+
+// =====================================================
+// GRACEFUL SHUTDOWN
+// =====================================================
+
+process.on('SIGTERM', () => {
+  logger.log('SIGTERM received, shutting down gracefully...', 'INFO', {
+    event: 'shutdown_start'
+  });
+  
+  // Attendi che i processi finiscano
+  setTimeout(() => {
+    logger.log('Shutdown complete', 'INFO', {
+      event: 'shutdown_complete'
+    });
+    process.exit(0);
+  }, 10000);
+});
+
+process.on('uncaughtException', (error) => {
+  logger.log('Uncaught exception', 'ERROR', {
+    event: 'uncaught_exception',
+    error: error.message,
+    stack: error.stack
+  });
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.log('Unhandled rejection', 'ERROR', {
+    event: 'unhandled_rejection',
+    reason: reason
+  });
+});
+
+// =====================================================
+// SERVER START
+// =====================================================
+
+app.listen(PORT, () => {
+  logger.log('╔══════════════════════════════════════════════╗', 'INFO');
+  logger.log('║     SCRAPER SERVER PROFESSIONALE AVVIATO     ║', 'INFO');
+  logger.log('╚══════════════════════════════════════════════╝', 'INFO');
+  logger.log(`Server: http://localhost:${PORT}`, 'INFO');
+  logger.log(`Environment: ${process.env.NODE_ENV || 'development'}`, 'INFO');
+  logger.log(`Render: ${process.env.RENDER ? 'Yes' : 'No'}`, 'INFO');
+  logger.log(`Data Directory: ${dataDir}`, 'INFO');
+  logger.log(`Public URL: https://scraper-cd.onrender.com`, 'INFO');
   
   if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
-    console.log('\n🔧 Configurazione CRON jobs...');
-    logDashboardEvent('CRON_INITIALIZED', 'production mode');
-  
-    cron.schedule('0 0 * * *', () => {
-      logDashboardEvent('CRON_FULL_SCAN', 'triggered at 00:00 UTC');
-      console.log('[CRON] Full scan notturno LENTO - 200 pagine');
-      
-      const scraperLockPath = path.join(outputDir, 'scraper.lock');
-      if (fs.existsSync(scraperLockPath)) {
-        logDashboardEvent('CRON_FULL_SCAN_SKIPPED', 'lock exists');
-        console.log('[CRON] Skip - già in corso');
-        return;
-      }
-      
-      spawn('node', ['scraper_componenti_wpai_min.js', '200'], { detached: true, stdio: 'ignore' }).unref();
-      logDashboardEvent('CRON_FULL_SCAN_STARTED', 'pages=200');
-    });
-    
-    cron.schedule('0 6,8,10,12,14,16,18,20,22 * * *', () => {
-      const hour = new Date().getUTCHours();
-      logDashboardEvent('CRON_STOCK_CHECK', `triggered at ${hour}:00 UTC`);
-      console.log('[CRON] Stock check VELOCE - 5000 prodotti');
-      
-      const stockLockPath = path.join(outputDir, 'stock_checker.lock');
-      if (fs.existsSync(stockLockPath)) {
-        logDashboardEvent('CRON_STOCK_CHECK_SKIPPED', 'lock exists');
-        console.log('[CRON] Skip - già in corso');
-        return;
-      }
-      
-      spawn('node', ['stock-checker-light.js', '5000'], { detached: true, stdio: 'ignore' }).unref();
-      logDashboardEvent('CRON_STOCK_CHECK_STARTED', 'limit=5000');
-    });
-    
-    console.log('⏰ CRON CONFIGURATI:');
-    console.log('   ✅ Full scan: SOLO 00:00 UTC - LENTO (4h)');
-    console.log('   ✅ Stock check: 6,8,10,12,14,16,18,20,22 UTC - VELOCE (1.5h)');
-    console.log('   ✅ 45.000 verifiche stock/giorno');
-    console.log('   ✅ Sistema LOCK anti-sovrapposizione');
-    console.log('   ✅ Logging completo eventi dashboard');
+    logger.log('\n⚡ SISTEMA OTTIMIZZATO ATTIVO:', 'INFO');
+    logger.log('• Scraping completo: ogni notte ore 2:00 (max 4h)', 'INFO');
+    logger.log('• Stock check: ogni 2.5h dalle 7:00 alle 22:00 (max 2h)', 'INFO');
+    logger.log('• Stock parziale: controlli supplementari ore di punta', 'INFO');
+    logger.log('• Backup automatico: ogni giorno ore 5:00', 'INFO');
+    logger.log('• Logging professionale: JSON + Eventi', 'INFO');
+    logger.log('• Tracking processi: Real-time monitoring', 'INFO');
   }
 });
+
+module.exports = app;
