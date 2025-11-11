@@ -949,10 +949,6 @@ Dashboard ora logga:
 - ✅ IP utente (se disponibile)
 - ✅ 3 tab separati: Scraper / Stock / Dashboard
 
-**Log dashboard.log esempio:**
-```
-[2025-11-11T08:00:00.000Z] [DASHBOARD] [server] CRON_STOCK_CHECK triggered at 8:00 UTC
-[2025-11-11T08:00:00.123Z] [DASHBOARD] [server] CRON_STOCK_CHECK_STARTED limit=5000
-[2025-11-11T09:15:30.456Z] [DASHBOARD] [192.168.1.1] PAGE_VIEW
-[2025-11-11T09:16:45.789Z] [DASHBOARD] [192.168.1.1] FULL_SCAN_REQUEST pages=20
-[2025-11-11T09:16:46.012Z] [DASHBOARD] [192.168.1.1] FULL_SCAN_STARTED pages=20, estimated=24min
+    console.log('• Logging completo eventi dashboard');
+  }
+});
