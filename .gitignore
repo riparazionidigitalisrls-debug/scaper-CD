@@ -1,44 +1,136 @@
 # Dependencies
 node_modules/
 npm-debug.log*
+yarn-debug.log*
 yarn-error.log*
+package-lock.json
+pnpm-lock.yaml
 
 # Output files
 output/
 *.csv
+!sample.csv
 *.log
 images/
 *.jpg
 *.jpeg
 *.png
+*.webp
 
-# Environment
+# Data directory
+data/
+/data/
+
+# Backup files
+backup*/
+backups/
+*.backup
+*.bak
+old*/
+
+# Environment files
 .env
 .env.local
 .env.production
+.env.development
+.env.test
 
 # System files
 .DS_Store
 Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.atom/
+*.iml
 
 # Temporary files
 tmp/
 temp/
 *.tmp
+*.temp
+cache/
 
-# Checkpoint files
+# Process files
+*.pid
+*.seed
+*.pid.lock
+
+# Checkpoint and state files
 checkpoint.json
+progress.json
+state.json
+*_progress.json
 
-# Generated CSV files
-prodotti_*.csv
-scraper_*.log
+# Test files
+coverage/
+.nyc_output/
+test-results/
+*.test.js
+*.spec.js
 
-# Backup folders
-backup*/
-old*/
+# Build files
+dist/
+build/
+.cache/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
+# Docker files (local development)
+docker-compose.override.yml
+.dockerignore.local
+
+# Logs directory
+logs/
+*.log.*
+error.log
+access.log
+
+# OS generated files
+*.dll
+*.exe
+*.o
+*.so
+*.dylib
+
+# Python (if any scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Render specific
+.render/
+
+# Security
+*.pem
+*.key
+*.cert
+*.crt
+private/
+secrets/
+
+# Database
+*.sqlite
+*.db
+*.sql
+
+# Archives
+*.zip
+*.tar
+*.gz
+*.rar
+*.7z
+
+# Documentation build
+docs/_build/
+docs/_site/
+
+# Monitoring
+monitoring/
+metrics/
