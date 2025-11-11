@@ -247,22 +247,37 @@ class ScraperWPAINoLock {
       const items = await page.evaluate(() => {
         const nodes = document.querySelectorAll('div[class*="prod"]');
         const out = [];
+        const debug = { total: nodes.length, skipped: 0, reasons: [] };
         
         nodes.forEach((el, i) => {
           const txt = el.textContent || '';
-          const skuMatch = txt.match(/Codice:\s*([A-Z0-9\-]+)/i);
-          const nameMatch = txt.match(/(.+?)(?:Codice:|$)/);
+          
+          // DEBUG: Log primi 3 elementi per capire struttura
+          if (i < 3) {
+            console.log(`[DEBUG] Prodotto ${i}:`, txt.substring(0, 200));
+          }
+          
+          const skuMatch = txt.match(/(?:Cod\.?\s*Art\.?|Codice|Cod|Art\.?|Articolo|Rif\.?)[:\s]*\n?\s*([A-Z0-9\-\.]+)/i);
+          const nameMatch = txt.match(/^(.+?)(?:Cod\.?\s*Art\.?|Codice|€)/i);
           const priceMatch = txt.match(/(\d+[.,]\d+)\s*€/);
-          const stockMatch = txt.match(/(\d+)\s*(?:pz|pezzi|disponibili)/i);
-          const brandMatch = txt.match(/Marca:\s*([^\n]+)/i);
-          const qualityMatch = txt.match(/Qualità:\s*([^\n]+)/i);
-          const packMatch = txt.match(/Imballo:\s*([^\n]+)/i);
-          const colorMatch = txt.match(/Colore:\s*([^\n]+)/i);
-          const compatMatch = txt.match(/Compatibile:\s*([^\n]+)/i);
+          const stockMatch = txt.match(/(\d+)\s*(?:pz|PZ|pezzi|disponibili|disp\.)/i);
+          const brandMatch = txt.match(/(?:Marca|Brand)[:\s]*\n?\s*([^\n]+)/i);
+          const qualityMatch = txt.match(/(?:Qualità|Quality)[:\s]*\n?\s*([^\n]+)/i);
+          const packMatch = txt.match(/\b(?:Confezione|Imballo)\b[:\s]*\n?\s*([^\n]+)/i);
+          const colorMatch = txt.match(/(?:Colore|Color)[:\s]*\n?\s*([^\n]+)/i);
+          const compatMatch = txt.match(/(?:Compatibile|Compatibilità)[:\s]*\n?\s*([^\n]+)/i);
           const origPriceMatch = txt.match(/€\s*(\d+[.,]\d+).*?€\s*(\d+[.,]\d+)/);
 
-          const imgEl = el.querySelector('img[src*=".JPG"]');
+          const imgEl = el.querySelector('img[src*=".JPG"], img[src*=".jpg"], img[src*=".jpeg"]');
           const imgUrl = imgEl ? imgEl.getAttribute('src') : null;
+
+          // DEBUG: Perché viene skippato?
+          if (!skuMatch) {
+            debug.skipped++;
+            if (debug.reasons.length < 5) {
+              debug.reasons.push(`#${i}: No SKU in "${txt.substring(0, 100)}"`);
+            }
+          }
 
           if (skuMatch) {
             out.push({
@@ -282,13 +297,27 @@ class ScraperWPAINoLock {
           }
         });
         
-        return out;
+        // Ritorna anche debug info
+        return { products: out, debug };
       });
 
-      this.log(`✓ Trovati ${items.length} prodotti in pagina`, 'INFO', 'products_found');
-      this.stats.productsFound += items.length;
+      // Estrai prodotti e debug info
+      const result = items;
+      const products = result.products || [];
+      const debugInfo = result.debug || {};
+      
+      this.log(`✓ Trovati ${products.length} prodotti in pagina`, 'INFO', 'products_found');
+      
+      if (debugInfo.skipped > 0) {
+        this.log(`⚠️ Skipped ${debugInfo.skipped}/${debugInfo.total} elementi (no SKU)`, 'WARN', 'products_skipped');
+        if (debugInfo.reasons && debugInfo.reasons.length > 0) {
+          this.log(`Debug reasons: ${debugInfo.reasons.join('; ')}`, 'DEBUG');
+        }
+      }
+      
+      this.stats.productsFound += products.length;
 
-      for (const p of items) {
+      for (const p of products) {
         if (this.seen.has(p.sku)) continue;
         this.seen.add(p.sku);
 
