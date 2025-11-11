@@ -1,7 +1,7 @@
 {
   "name": "scraper-componenti-wpai",
-  "version": "2.0.0",
-  "description": "Scraper componenti digitali con supporto Enterprise per alti volumi",
+  "version": "3.0.0",
+  "description": "Scraper componenti digitali FIXED - Sistema completo con lock management",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -9,8 +9,11 @@
     "scrape:test": "node scraper_componenti_wpai_min.js 5",
     "scrape:sync": "node scraper_componenti_wpai_min.js 20",
     "scrape:medium": "node scraper_componenti_wpai_min.js 50",
-    "scrape:enterprise": "node scraper_componenti_enterprise.js 200",
-    "scrape:full": "node scraper_componenti_enterprise.js 999"
+    "scrape:full": "node scraper_componenti_wpai_min.js 200",
+    "stock:test": "node stock-checker-light.js 100",
+    "stock:medium": "node stock-checker-light.js 1000",
+    "stock:full": "node stock-checker-light.js 5000",
+    "dev": "NODE_ENV=development node server.js"
   },
   "dependencies": {
     "playwright": "^1.41.0",
@@ -19,8 +22,15 @@
     "node-cron": "^3.0.3"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
   },
-  "author": "",
+  "keywords": [
+    "scraper",
+    "e-commerce",
+    "stock-checker",
+    "automation"
+  ],
+  "author": "Open Lab - Tanos",
   "license": "ISC"
 }
