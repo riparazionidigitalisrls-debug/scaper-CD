@@ -1,8 +1,9 @@
-// server.js - Server Professionale per Scraper Componenti Digitali
-// Sistema completo con dashboard avanzata, logging dettagliato e scheduling ottimizzato
+// server.js - Server Professionale FIXED v3.0
+// Fix: paths consistenti, lock management, error handling migliorato
 
 const express = require('express');
 const fs = require('fs');
+const fsp = require('fs/promises');
 const path = require('path');
 const { spawn } = require('child_process');
 const cron = require('node-cron');
@@ -11,19 +12,35 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 // =====================================================
-// CONFIGURAZIONE PATHS E DIRECTORY
+// CONFIGURAZIONE PATHS E DIRECTORY - FIXED
 // =====================================================
 const dataDir = process.env.DATA_DIR || (process.env.RENDER ? '/data' : './data');
 const outputDir = path.join(dataDir, 'output');
 const logsDir = path.join(dataDir, 'logs');
 const backupDir = path.join(dataDir, 'backups');
 
-// File paths principali
+// File paths principali - TUTTI in outputDir per consistenza
 const csvLatestPath = path.join(outputDir, 'prodotti_latest.csv');
 const systemLogPath = path.join(logsDir, 'system.log');
 const scraperLogPath = path.join(logsDir, 'scraper.log');
 const stockLogPath = path.join(logsDir, 'stock_checker.log');
 const eventsLogPath = path.join(logsDir, 'events.json');
+
+// 🆕 Lock paths
+const scraperLockPath = path.join(outputDir, 'scraper.lock');
+const stockLockPath = path.join(outputDir, 'stock_checker.lock');
+
+// =====================================================
+// ENSURE DIRECTORIES AT STARTUP
+// =====================================================
+function ensureDirectories() {
+  [dataDir, outputDir, logsDir, backupDir, path.join(outputDir, 'images')].forEach(dir => {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+      console.log(`✓ Created directory: ${dir}`);
+    }
+  });
+}
 
 // =====================================================
 // SISTEMA DI LOGGING PROFESSIONALE
@@ -31,15 +48,6 @@ const eventsLogPath = path.join(logsDir, 'events.json');
 class Logger {
   constructor(logFile) {
     this.logFile = logFile;
-    this.ensureLogDir();
-  }
-
-  ensureLogDir() {
-    [logsDir, outputDir, backupDir].forEach(dir => {
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-    });
   }
 
   log(message, level = 'INFO', metadata = {}) {
@@ -77,7 +85,7 @@ class Logger {
       }
       
       events.unshift(entry);
-      events = events.slice(0, 1000); // Mantieni solo ultimi 1000 eventi
+      events = events.slice(0, 1000);
       
       fs.writeFileSync(eventsLogPath, JSON.stringify(events, null, 2));
     } catch (e) {
@@ -87,6 +95,62 @@ class Logger {
 }
 
 const logger = new Logger(systemLogPath);
+
+// =====================================================
+// LOCK MANAGER - NEW
+// =====================================================
+class LockManager {
+  static checkLock(lockPath, maxAgeMs = 14400000) { // 4h default
+    try {
+      if (fs.existsSync(lockPath)) {
+        const lockData = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+        const lockAge = Date.now() - lockData.timestamp;
+        
+        if (lockAge > maxAgeMs) {
+          logger.log(`Lock stale detected (${Math.round(lockAge/3600000)}h), removing`, 'WARN');
+          fs.unlinkSync(lockPath);
+          return false;
+        }
+        
+        logger.log(`Lock exists (PID ${lockData.pid})`, 'WARN');
+        return true;
+      }
+      return false;
+    } catch (e) {
+      logger.log(`Error checking lock: ${e.message}`, 'ERROR');
+      return false;
+    }
+  }
+  
+  static createLock(lockPath, processId) {
+    const lockData = {
+      pid: process.pid,
+      processId,
+      timestamp: Date.now(),
+      startedAt: new Date().toISOString()
+    };
+    
+    try {
+      fs.writeFileSync(lockPath, JSON.stringify(lockData, null, 2));
+      logger.log(`Lock created: ${path.basename(lockPath)}`, 'INFO');
+      return true;
+    } catch (e) {
+      logger.log(`Failed to create lock: ${e.message}`, 'ERROR');
+      return false;
+    }
+  }
+  
+  static removeLock(lockPath) {
+    try {
+      if (fs.existsSync(lockPath)) {
+        fs.unlinkSync(lockPath);
+        logger.log(`Lock removed: ${path.basename(lockPath)}`, 'INFO');
+      }
+    } catch (e) {
+      logger.log(`Error removing lock: ${e.message}`, 'WARN');
+    }
+  }
+}
 
 // =====================================================
 // TRACKING PROCESSI E STATO
@@ -102,7 +166,8 @@ const processTracker = {
       params,
       startTime: Date.now(),
       status: 'running',
-      progress: 0
+      progress: 0,
+      pid: null
     };
     
     logger.log(`Process started: ${type}`, 'INFO', {
@@ -111,6 +176,12 @@ const processTracker = {
       type,
       params
     });
+  },
+  
+  setPid(processId, pid) {
+    if (this.running[processId]) {
+      this.running[processId].pid = pid;
+    }
   },
   
   update(processId, progress, message) {
@@ -130,7 +201,7 @@ const processTracker = {
       process.result = result;
       
       this.history.unshift(process);
-      this.history = this.history.slice(0, 100); // Mantieni solo ultimi 100
+      this.history = this.history.slice(0, 100);
       
       delete this.running[processId];
       
@@ -169,7 +240,159 @@ function getPublicUrl(req) {
 }
 
 // =====================================================
-// DASHBOARD PRINCIPALE MIGLIORATA
+// API ENDPOINTS - IMPROVED
+// =====================================================
+
+// Health check
+app.get('/healthz', (req, res) => {
+  res.status(200).json({ 
+    status: 'healthy',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
+
+// System stats API
+app.get('/api/stats', (req, res) => {
+  const stats = getSystemStats();
+  res.json(stats);
+});
+
+// Process tracking API
+app.get('/api/processes', (req, res) => {
+  res.json({
+    running: processTracker.getRunning(),
+    history: processTracker.getHistory()
+  });
+});
+
+// Start scraping - WITH LOCK CHECK
+app.post('/api/scrape', async (req, res) => {
+  const pages = parseInt(req.body.pages) || 20;
+  
+  // Check lock
+  if (LockManager.checkLock(scraperLockPath)) {
+    return res.status(409).json({ 
+      error: 'Scraper già in esecuzione',
+      message: 'Attendi il completamento dello scraping in corso'
+    });
+  }
+  
+  const processId = `manual_scrape_${Date.now()}`;
+  processTracker.start(processId, 'manual_scraping', { pages });
+  
+  // Spawn process
+  const child = spawn('node', ['scraper_componenti_wpai_min.js', pages.toString()], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: false
+  });
+  
+  processTracker.setPid(processId, child.pid);
+  
+  // Capture output
+  let output = '';
+  child.stdout.on('data', (data) => {
+    output += data.toString();
+  });
+  
+  child.stderr.on('data', (data) => {
+    logger.log(`Scraper error: ${data}`, 'ERROR');
+  });
+  
+  child.on('close', (code) => {
+    processTracker.end(processId, code === 0 ? 'completed' : 'failed', { 
+      exitCode: code,
+      output: output.slice(-500)
+    });
+    LockManager.removeLock(scraperLockPath);
+  });
+  
+  // Timeout safety
+  const timeout = setTimeout(() => {
+    if (child.pid) {
+      logger.log('Scraper timeout, terminating', 'WARN');
+      try {
+        process.kill(child.pid, 'SIGTERM');
+      } catch (e) {
+        logger.log(`Kill failed: ${e.message}`, 'ERROR');
+      }
+    }
+  }, 4 * 60 * 60 * 1000); // 4 hours
+  
+  child.on('close', () => clearTimeout(timeout));
+  
+  res.json({ 
+    success: true, 
+    processId,
+    message: `Scraping avviato per ${pages} pagine` 
+  });
+});
+
+// Start stock check - WITH LOCK CHECK
+app.post('/api/stock-check', async (req, res) => {
+  const count = parseInt(req.body.count) || 1000;
+  
+  // Check if stock-checker exists
+  if (!fs.existsSync(path.join(__dirname, 'stock-checker-light.js'))) {
+    return res.status(404).json({ 
+      error: 'Stock checker non trovato',
+      message: 'File stock-checker-light.js mancante'
+    });
+  }
+  
+  // Check lock
+  if (LockManager.checkLock(stockLockPath)) {
+    return res.status(409).json({ 
+      error: 'Stock check già in esecuzione',
+      message: 'Attendi il completamento del controllo in corso'
+    });
+  }
+  
+  const processId = `manual_stock_${Date.now()}`;
+  processTracker.start(processId, 'manual_stock_check', { count });
+  LockManager.createLock(stockLockPath, processId);
+  
+  const child = spawn('node', ['stock-checker-light.js', count.toString()], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: false
+  });
+  
+  processTracker.setPid(processId, child.pid);
+  
+  child.on('close', (code) => {
+    processTracker.end(processId, code === 0 ? 'completed' : 'failed', { exitCode: code });
+    LockManager.removeLock(stockLockPath);
+  });
+  
+  // Timeout
+  const timeout = setTimeout(() => {
+    if (child.pid) {
+      logger.log('Stock check timeout, terminating', 'WARN');
+      try {
+        process.kill(child.pid, 'SIGTERM');
+      } catch (e) {}
+    }
+  }, 2 * 60 * 60 * 1000); // 2 hours
+  
+  child.on('close', () => clearTimeout(timeout));
+  
+  res.json({ 
+    success: true, 
+    processId,
+    message: `Stock check avviato per ${count} prodotti` 
+  });
+});
+
+// Download CSV
+app.get('/api/download-csv', (req, res) => {
+  if (!fs.existsSync(csvLatestPath)) {
+    return res.status(404).json({ error: 'CSV non trovato' });
+  }
+  res.download(csvLatestPath, 'prodotti_componenti.csv');
+});
+
+// =====================================================
+// DASHBOARD PRINCIPALE
 // =====================================================
 app.get('/', (req, res) => {
   const stats = getSystemStats();
@@ -181,7 +404,7 @@ app.get('/', (req, res) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Scraper CD - Dashboard Professionale</title>
+  <title>Scraper CD - Dashboard v3.0</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { 
@@ -206,6 +429,15 @@ app.get('/', (req, res) => {
       display: flex;
       align-items: center;
       gap: 10px;
+    }
+    
+    .version { 
+      font-size: 0.4em; 
+      color: #666; 
+      background: #f0f0f0; 
+      padding: 4px 8px; 
+      border-radius: 4px;
+      font-weight: normal;
     }
     
     .status-badge {
@@ -273,502 +505,265 @@ app.get('/', (req, res) => {
       margin: 15px 0;
     }
     
-    button { 
-      background: #667eea; 
-      color: white; 
-      border: none; 
-      padding: 10px 20px; 
-      border-radius: 5px; 
-      cursor: pointer; 
-      font-size: 14px;
-      font-weight: 500;
-      transition: all 0.3s;
-      display: flex;
-      align-items: center;
-      gap: 5px;
-    }
-    
-    button:hover { 
-      background: #5a67d8;
-      transform: translateY(-1px);
-      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-    }
-    
-    button.stock { background: #10b981; }
-    button.stock:hover { background: #059669; }
-    
-    button.scrape { background: #f59e0b; }
-    button.scrape:hover { background: #d97706; }
-    
-    button.danger { background: #ef4444; }
-    button.danger:hover { background: #dc2626; }
-    
-    .schedule-info {
-      background: #f0f9ff;
-      border-left: 4px solid #3b82f6;
-      padding: 15px;
-      margin: 15px 0;
-      border-radius: 5px;
-    }
-    
-    .schedule-info h3 {
-      color: #1e40af;
-      margin-bottom: 10px;
-    }
-    
-    .schedule-item {
-      padding: 5px 0;
-      border-bottom: 1px solid #e0e7ff;
-    }
-    
-    .schedule-item:last-child {
-      border-bottom: none;
-    }
-    
-    .log-viewer {
-      background: #1a1a1a;
-      color: #00ff00;
-      padding: 15px;
-      border-radius: 5px;
-      font-family: 'Courier New', monospace;
-      font-size: 12px;
-      height: 400px;
-      overflow-y: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
-    }
-    
-    .process-list {
-      max-height: 300px;
-      overflow-y: auto;
-    }
-    
-    .process-item {
-      padding: 10px;
-      border-bottom: 1px solid #e5e7eb;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    
-    .process-item:last-child {
-      border-bottom: none;
-    }
-    
-    .progress-bar {
-      width: 100%;
-      height: 20px;
-      background: #e5e7eb;
-      border-radius: 10px;
-      overflow: hidden;
-      margin-top: 5px;
-    }
-    
-    .progress-fill {
-      height: 100%;
-      background: linear-gradient(90deg, #667eea, #764ba2);
-      transition: width 0.3s;
-    }
-    
-    .tabs {
-      display: flex;
-      gap: 10px;
-      margin-bottom: 20px;
-    }
-    
-    .tab {
-      padding: 10px 20px;
-      background: #e5e7eb;
-      border-radius: 5px;
+    .btn {
+      padding: 12px 24px;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
       cursor: pointer;
       transition: all 0.3s;
+      text-decoration: none;
+      display: inline-block;
+      text-align: center;
     }
     
-    .tab.active {
-      background: #667eea;
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
       color: white;
     }
     
-    .tab-content {
-      display: none;
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
     }
     
-    .tab-content.active {
-      display: block;
+    .btn-secondary {
+      background: #f7fafc;
+      color: #2d3748;
+      border: 2px solid #e2e8f0;
     }
     
-    @media (max-width: 768px) {
-      .grid {
-        grid-template-columns: 1fr;
-      }
+    .btn-secondary:hover {
+      background: #edf2f7;
+      border-color: #cbd5e0;
     }
+    
+    .btn-danger {
+      background: #fc8181;
+      color: white;
+    }
+    
+    .process-list {
+      margin-top: 15px;
+    }
+    
+    .process-item {
+      background: #f7fafc;
+      padding: 12px;
+      border-radius: 6px;
+      margin-bottom: 8px;
+      border-left: 4px solid #667eea;
+    }
+    
+    .process-item.running { border-left-color: #48bb78; }
+    .process-item.completed { border-left-color: #4299e1; }
+    .process-item.failed { border-left-color: #f56565; }
+    
+    .log-viewer {
+      background: #1a202c;
+      color: #a0aec0;
+      padding: 15px;
+      border-radius: 6px;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      max-height: 400px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    
+    .alert {
+      padding: 12px 16px;
+      border-radius: 6px;
+      margin-bottom: 15px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    .alert-info { background: #bee3f8; color: #2c5282; }
+    .alert-warning { background: #feebc8; color: #7c2d12; }
+    .alert-success { background: #c6f6d5; color: #22543d; }
   </style>
 </head>
 <body>
   <div class="container">
-    <!-- Header -->
     <div class="header">
       <h1>
-        🚀 Scraper Componenti Digitali
-        <span class="status-badge ${stats.systemStatus}">
-          ${stats.systemStatus === 'active' ? '● Online' : '○ Offline'}
-        </span>
+        🔧 Scraper Componenti Digitali
+        <span class="version">v3.0 FIXED</span>
       </h1>
       <p style="color: #666; margin-top: 10px;">
-        Server: ${process.env.RENDER ? 'Render.com Production' : 'Development'} | 
-        Uptime: ${stats.uptime} | 
-        Memory: ${stats.memory.used}/${stats.memory.total}MB
+        Sistema ottimizzato per scraping e monitoraggio stock
+        <span class="status-badge ${stats.systemStatus === 'active' ? 'active' : 'warning'}">
+          ${stats.systemStatus === 'active' ? '● Attivo' : '● Attesa'}
+        </span>
       </p>
     </div>
-    
-    <!-- Metriche Principali -->
+
+    ${stats.activeProcesses > 0 ? `
+      <div class="alert alert-info">
+        ⚙️ <strong>${stats.activeProcesses} processi in esecuzione</strong> - Verifica lo stato qui sotto
+      </div>
+    ` : ''}
+
     <div class="grid">
       <div class="card">
         <h2>📦 Prodotti Totali</h2>
         <div class="metric">${stats.totalProducts.toLocaleString()}</div>
-        <div class="metric-label">Nel database</div>
-        <div class="progress-bar">
-          <div class="progress-fill" style="width: ${Math.min(100, stats.totalProducts/5000*100)}%"></div>
-        </div>
+        <div class="metric-label">Prodotti nel catalogo</div>
       </div>
-      
+
       <div class="card">
-        <h2>🕐 Ultimo Aggiornamento</h2>
+        <h2>🕒 Ultimo Aggiornamento</h2>
         <div class="metric" style="font-size: 1.5em;">${stats.lastUpdate.time}</div>
         <div class="metric-label">${stats.lastUpdate.ago}</div>
       </div>
-      
+
       <div class="card">
-        <h2>💾 Database</h2>
+        <h2>📊 Dimensione CSV</h2>
         <div class="metric">${stats.csvSize} MB</div>
-        <div class="metric-label">CSV + ${stats.imagesCount} immagini</div>
+        <div class="metric-label">File dati principale</div>
       </div>
-      
+
       <div class="card">
-        <h2>⚡ Processi Attivi</h2>
-        <div class="metric">${stats.activeProcesses}</div>
-        <div class="metric-label">In esecuzione</div>
+        <h2>🖼️ Immagini</h2>
+        <div class="metric">${stats.imagesCount.toLocaleString()}</div>
+        <div class="metric-label">Immagini scaricate</div>
+      </div>
+
+      <div class="card">
+        <h2>⚡ Uptime Server</h2>
+        <div class="metric" style="font-size: 1.8em;">${stats.uptime}</div>
+        <div class="metric-label">Tempo attivo</div>
+      </div>
+
+      <div class="card">
+        <h2>💾 Memoria</h2>
+        <div class="metric" style="font-size: 1.8em;">${stats.memory.used} MB</div>
+        <div class="metric-label">Di ${stats.memory.total} MB disponibili</div>
       </div>
     </div>
-    
-    <!-- Controlli Manuali -->
+
     <div class="action-section">
-      <h2 style="margin-bottom: 20px;">🎮 Controlli Manuali</h2>
+      <h2 style="margin-bottom: 15px;">⚡ Azioni Rapide</h2>
       
-      <div class="tabs">
-        <div class="tab active" onclick="switchTab('stock')">Stock Check</div>
-        <div class="tab" onclick="switchTab('scrape')">Scraping Completo</div>
-        <div class="tab" onclick="switchTab('system')">Sistema</div>
-      </div>
-      
-      <!-- Tab Stock Check -->
-      <div id="stock-tab" class="tab-content active">
-        <p style="margin-bottom: 10px;">
-          <strong>⚡ Stock Check Veloce</strong> - Solo verifica disponibilità (20-120 min)
-        </p>
-        <div class="button-group">
-          <button class="stock" onclick="runStockCheck(100)">
-            🧪 Test 100 prodotti
-          </button>
-          <button class="stock" onclick="runStockCheck(500)">
-            📊 Check 500 prodotti
-          </button>
-          <button class="stock" onclick="runStockCheck(1000)">
-            📈 Check 1000 prodotti
-          </button>
-          <button class="stock" onclick="runStockCheck(5000)">
-            🚀 Check COMPLETO (5000)
-          </button>
-        </div>
-      </div>
-      
-      <!-- Tab Scraping -->
-      <div id="scrape-tab" class="tab-content">
-        <p style="margin-bottom: 10px;">
-          <strong>📦 Scraping Completo</strong> - Tutti i dati + immagini (25 min - 4 ore)
-        </p>
-        <div class="button-group">
-          <button class="scrape" onclick="runScrape(5)">
-            🧪 Test (5 pagine)
-          </button>
-          <button class="scrape" onclick="runScrape(20)">
-            🔄 Sync (20 pagine)
-          </button>
-          <button class="scrape" onclick="runScrape(50)">
-            📊 Medio (50 pagine)
-          </button>
-          <button class="scrape" onclick="runScrape(200)">
-            📦 Full (200 pagine)
-          </button>
-        </div>
-      </div>
-      
-      <!-- Tab Sistema -->
-      <div id="system-tab" class="tab-content">
-        <p style="margin-bottom: 10px;">
-          <strong>⚙️ Controlli di Sistema</strong>
-        </p>
-        <div class="button-group">
-          <button onclick="downloadCSV()">
-            📥 Download CSV
-          </button>
-          <button onclick="viewBackups()">
-            💾 View Backups
-          </button>
-          <button onclick="clearLogs()">
-            🗑️ Clear Logs
-          </button>
-          <button class="danger" onclick="killAllProcesses()">
-            🛑 Kill All Processes
-          </button>
-        </div>
+      <div class="button-group">
+        <button class="btn btn-primary" onclick="startScraping(20)">
+          🔄 Scraping Test (20 pagine)
+        </button>
+        <button class="btn btn-primary" onclick="startScraping(200)">
+          🔄 Scraping Completo (200 pagine)
+        </button>
+        <button class="btn btn-secondary" onclick="startStockCheck(1000)">
+          📊 Stock Check (1000 prodotti)
+        </button>
+        <button class="btn btn-secondary" onclick="startStockCheck(5000)">
+          📊 Stock Check Completo (5000)
+        </button>
+        <a href="/api/download-csv" class="btn btn-secondary">
+          ⬇️ Scarica CSV
+        </a>
       </div>
     </div>
-    
-    <!-- Schedule Automatico -->
-    <div class="action-section">
-      <h2 style="margin-bottom: 20px;">📅 Schedule Automatico</h2>
-      <div class="schedule-info">
-        <h3>🌙 Notturno</h3>
-        <div class="schedule-item">
-          <strong>02:00</strong> - Scraping completo lento (max 4 ore) - Tutti i dati
-        </div>
-      </div>
-      
-      <div class="schedule-info" style="background: #f0fdf4; border-color: #10b981;">
-        <h3>☀️ Diurno</h3>
-        <div class="schedule-item">
-          <strong>07:00 - 22:00</strong> - Stock check veloce ogni 2.5 ore (max 2 ore)
-        </div>
-        <div class="schedule-item" style="color: #666; font-size: 0.9em;">
-          Orari: 07:00, 09:30, 12:00, 14:30, 17:00, 19:30, 22:00
-        </div>
-      </div>
-    </div>
-    
-    <!-- Processi Attivi -->
-    ${stats.activeProcesses > 0 ? `
-    <div class="action-section">
-      <h2 style="margin-bottom: 20px;">🔄 Processi in Esecuzione</h2>
-      <div class="process-list">
-        ${stats.runningProcesses.map(p => `
-          <div class="process-item">
-            <div>
-              <strong>${p.type}</strong><br>
-              <small>ID: ${p.id} | Started: ${new Date(p.startTime).toLocaleTimeString()}</small>
+
+    ${stats.runningProcesses.length > 0 ? `
+      <div class="action-section">
+        <h2 style="margin-bottom: 15px;">🔄 Processi in Esecuzione</h2>
+        <div class="process-list">
+          ${stats.runningProcesses.map(p => `
+            <div class="process-item running">
+              <strong>${p.type}</strong> (PID: ${p.id})
+              <br>
+              <small>Avviato: ${new Date(p.startTime).toLocaleTimeString('it-IT')}</small>
+              ${p.message ? `<br><small>${p.message}</small>` : ''}
             </div>
-            <div style="width: 200px;">
-              <div class="progress-bar">
-                <div class="progress-fill" style="width: ${p.progress}%"></div>
-              </div>
-            </div>
-          </div>
-        `).join('')}
+          `).join('')}
+        </div>
       </div>
-    </div>
     ` : ''}
-    
-    <!-- Log Viewer -->
+
     <div class="action-section">
-      <h2 style="margin-bottom: 20px;">📋 Eventi Recenti</h2>
-      <div class="log-viewer" id="log-viewer">
-        ${stats.recentEvents}
+      <h2 style="margin-bottom: 15px;">📝 Log Eventi Recenti</h2>
+      <div class="log-viewer" id="logViewer">
+${stats.recentEvents || 'Nessun evento recente'}
+      </div>
+    </div>
+
+    <div class="action-section">
+      <h2 style="margin-bottom: 15px;">ℹ️ Informazioni Sistema</h2>
+      <div style="background: #f7fafc; padding: 15px; border-radius: 6px;">
+        <p><strong>Environment:</strong> ${process.env.NODE_ENV || 'development'}</p>
+        <p><strong>Render:</strong> ${process.env.RENDER ? 'Yes' : 'No'}</p>
+        <p><strong>Data Directory:</strong> ${dataDir}</p>
+        <p><strong>Base URL:</strong> ${baseUrl}</p>
+        ${process.env.RENDER ? `
+          <p style="margin-top: 10px; color: #48bb78;">
+            ✓ CRON Jobs attivi: Scraping notturno (02:00), Stock check (ogni 2.5h), Backup (05:00)
+          </p>
+        ` : `
+          <p style="margin-top: 10px; color: #ed8936;">
+            ⚠ CRON Jobs disabilitati (modalità development)
+          </p>
+        `}
       </div>
     </div>
   </div>
-  
+
   <script>
-    // Tab switching
-    function switchTab(tabName) {
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    async function startScraping(pages) {
+      if (!confirm(\`Avviare scraping di \${pages} pagine? (Durata stimata: \${Math.round(pages * 2)} minuti)\`)) return;
       
-      event.target.classList.add('active');
-      document.getElementById(tabName + '-tab').classList.add('active');
-    }
-    
-    // Actions
-    async function runStockCheck(count) {
-      if (!confirm(\`Avviare stock check per \${count} prodotti?\`)) return;
-      
-      const res = await fetch('/api/stock-check', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ count })
-      });
-      const data = await res.json();
-      alert(data.message);
-      setTimeout(() => location.reload(), 2000);
-    }
-    
-    async function runScrape(pages) {
-      if (!confirm(\`Avviare scraping di \${pages} pagine?\`)) return;
-      
-      const res = await fetch('/api/scrape', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ pages })
-      });
-      const data = await res.json();
-      alert(data.message);
-      setTimeout(() => location.reload(), 2000);
-    }
-    
-    function downloadCSV() {
-      window.open('${baseUrl}/output/prodotti_latest.csv', '_blank');
-    }
-    
-    function viewBackups() {
-      window.open('${baseUrl}/backups', '_blank');
-    }
-    
-    async function clearLogs() {
-      if (!confirm('Cancellare tutti i log?')) return;
-      
-      await fetch('/api/logs', { method: 'DELETE' });
-      alert('Log cancellati');
-      location.reload();
-    }
-    
-    async function killAllProcesses() {
-      if (!confirm('Terminare TUTTI i processi in esecuzione?')) return;
-      
-      await fetch('/api/kill-all', { method: 'POST' });
-      alert('Processi terminati');
-      location.reload();
-    }
-    
-    // Auto-refresh ogni 30 secondi
-    setInterval(() => {
-      fetch('/api/status')
-        .then(res => res.json())
-        .then(data => {
-          if (data.activeProcesses > 0) {
-            location.reload();
-          }
+      try {
+        const response = await fetch('/api/scrape', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pages })
         });
-    }, 30000);
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+          alert('✓ Scraping avviato! Monitora il progresso nella sezione "Processi in Esecuzione".');
+          setTimeout(() => location.reload(), 2000);
+        } else {
+          alert('✗ Errore: ' + (data.message || data.error || 'Errore sconosciuto'));
+        }
+      } catch (error) {
+        alert('✗ Errore di rete: ' + error.message);
+      }
+    }
+    
+    async function startStockCheck(count) {
+      if (!confirm(\`Controllare stock di \${count} prodotti?\`)) return;
+      
+      try {
+        const response = await fetch('/api/stock-check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ count })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+          alert('✓ Stock check avviato!');
+          setTimeout(() => location.reload(), 2000);
+        } else {
+          alert('✗ Errore: ' + (data.message || data.error || 'Errore sconosciuto'));
+        }
+      } catch (error) {
+        alert('✗ Errore di rete: ' + error.message);
+      }
+    }
+    
+    // Auto-refresh ogni 30 secondi se ci sono processi attivi
+    ${stats.activeProcesses > 0 ? 'setTimeout(() => location.reload(), 30000);' : ''}
   </script>
 </body>
 </html>
   `);
-});
-
-// =====================================================
-// API ENDPOINTS
-// =====================================================
-
-// Status endpoint
-app.get('/api/status', (req, res) => {
-  const stats = getSystemStats();
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    ...stats
-  });
-});
-
-// Stock check endpoint
-app.post('/api/stock-check', async (req, res) => {
-  const { count = 5000 } = req.body;
-  const processId = `stock_${Date.now()}`;
-  
-  logger.log(`Starting stock check for ${count} products`, 'INFO', {
-    event: 'stock_check_start',
-    count
-  });
-  
-  processTracker.start(processId, 'stock_check', { count });
-  
-  const child = spawn('node', ['stock-checker-light.js', count.toString()], {
-    detached: true,
-    stdio: 'ignore'
-  });
-  
-  child.unref();
-  
-  res.json({
-    status: 'started',
-    processId,
-    message: `Stock check avviato per ${count} prodotti`
-  });
-});
-
-// Scraping endpoint
-app.post('/api/scrape', async (req, res) => {
-  const { pages = 20 } = req.body;
-  const processId = `scrape_${Date.now()}`;
-  
-  logger.log(`Starting scraping for ${pages} pages`, 'INFO', {
-    event: 'scraping_start',
-    pages
-  });
-  
-  processTracker.start(processId, 'scraping', { pages });
-  
-  const child = spawn('node', ['scraper_componenti_wpai_min.js', pages.toString()], {
-    detached: true,
-    stdio: 'ignore'
-  });
-  
-  child.unref();
-  
-  res.json({
-    status: 'started',
-    processId,
-    message: `Scraping avviato per ${pages} pagine`
-  });
-});
-
-// Get processes
-app.get('/api/processes', (req, res) => {
-  res.json({
-    running: processTracker.getRunning(),
-    history: processTracker.getHistory()
-  });
-});
-
-// Kill all processes
-app.post('/api/kill-all', (req, res) => {
-  logger.log('Killing all processes', 'WARN', {
-    event: 'kill_all_processes'
-  });
-  
-  // Implementa kill dei processi
-  res.json({ status: 'ok' });
-});
-
-// Delete logs
-app.delete('/api/logs', (req, res) => {
-  logger.log('Clearing logs', 'INFO', {
-    event: 'clear_logs'
-  });
-  
-  [logsDir, outputDir].forEach(dir => {
-    if (fs.existsSync(dir)) {
-      const files = fs.readdirSync(dir);
-      files.forEach(file => {
-        if (file.endsWith('.log')) {
-          fs.unlinkSync(path.join(dir, file));
-        }
-      });
-    }
-  });
-  
-  res.json({ status: 'ok' });
-});
-
-// Health checks
-app.get('/healthz', (req, res) => res.status(200).send('ok'));
-app.get('/health', (req, res) => {
-  const stats = getSystemStats();
-  res.json({
-    status: 'healthy',
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString(),
-    products: stats.totalProducts,
-    lastUpdate: stats.lastUpdate
-  });
 });
 
 // =====================================================
@@ -867,72 +862,97 @@ if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
   
   // SCRAPING COMPLETO NOTTURNO - Ore 2:00 (max 4 ore)
   cron.schedule('0 2 * * *', () => {
+    // Check lock prima di avviare
+    if (LockManager.checkLock(scraperLockPath)) {
+      logger.log('[CRON] Scraper già in corso, skip', 'WARN');
+      return;
+    }
+    
     const processId = `cron_scrape_${Date.now()}`;
     logger.log('[CRON] Starting nightly full scraping', 'INFO', {
       event: 'cron_scrape_start'
     });
     
     processTracker.start(processId, 'cron_scraping', { pages: 200 });
+    LockManager.createLock(scraperLockPath, processId);
     
     const child = spawn('node', ['scraper_componenti_wpai_min.js', '200'], {
-      detached: true,
-      stdio: 'ignore'
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: false
+    });
+    
+    processTracker.setPid(processId, child.pid);
+    
+    child.on('close', (code) => {
+      processTracker.end(processId, code === 0 ? 'completed' : 'failed');
+      LockManager.removeLock(scraperLockPath);
     });
     
     // Timeout dopo 4 ore
-    setTimeout(() => {
+    const timeout = setTimeout(() => {
       try {
-        child.kill();
+        if (child.pid) {
+          process.kill(child.pid, 'SIGTERM');
+        }
         processTracker.end(processId, 'timeout');
+        LockManager.removeLock(scraperLockPath);
         logger.log('[CRON] Scraping timeout after 4 hours', 'WARN');
-      } catch (e) {}
+      } catch (e) {
+        logger.log(`[CRON] Timeout kill error: ${e.message}`, 'ERROR');
+      }
     }, 4 * 60 * 60 * 1000);
     
-    child.unref();
+    child.on('close', () => clearTimeout(timeout));
   });
   
   // STOCK CHECK DIURNO - Ogni 2.5 ore dalle 7:00 alle 22:00
-  const stockSchedule = '0 7,9,12,14,17,19,22 * * *';  // Orari esatti
+  const stockSchedule = '0 7,9,12,14,17,19,22 * * *';
   cron.schedule(stockSchedule, () => {
+    // Check if stock-checker exists
+    if (!fs.existsSync(path.join(__dirname, 'stock-checker-light.js'))) {
+      logger.log('[CRON] Stock checker file not found, skipping', 'WARN');
+      return;
+    }
+    
+    // Check lock
+    if (LockManager.checkLock(stockLockPath)) {
+      logger.log('[CRON] Stock check già in corso, skip', 'WARN');
+      return;
+    }
+    
     const processId = `cron_stock_${Date.now()}`;
     logger.log('[CRON] Starting stock check', 'INFO', {
       event: 'cron_stock_start'
     });
     
     processTracker.start(processId, 'cron_stock_check', { count: 5000 });
+    LockManager.createLock(stockLockPath, processId);
     
     const child = spawn('node', ['stock-checker-light.js', '5000'], {
-      detached: true,
-      stdio: 'ignore'
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: false
+    });
+    
+    processTracker.setPid(processId, child.pid);
+    
+    child.on('close', (code) => {
+      processTracker.end(processId, code === 0 ? 'completed' : 'failed');
+      LockManager.removeLock(stockLockPath);
     });
     
     // Timeout dopo 2 ore
-    setTimeout(() => {
+    const timeout = setTimeout(() => {
       try {
-        child.kill();
+        if (child.pid) {
+          process.kill(child.pid, 'SIGTERM');
+        }
         processTracker.end(processId, 'timeout');
+        LockManager.removeLock(stockLockPath);
         logger.log('[CRON] Stock check timeout after 2 hours', 'WARN');
       } catch (e) {}
     }, 2 * 60 * 60 * 1000);
     
-    child.unref();
-  });
-  
-  // Aggiungi anche controllo parziale a mezzora per le ore di punta
-  cron.schedule('30 9,11,14,16,19 * * *', () => {
-    const processId = `cron_stock_partial_${Date.now()}`;
-    logger.log('[CRON] Starting partial stock check', 'INFO', {
-      event: 'cron_stock_partial_start'
-    });
-    
-    processTracker.start(processId, 'cron_stock_check_partial', { count: 1000 });
-    
-    const child = spawn('node', ['stock-checker-light.js', '1000'], {
-      detached: true,
-      stdio: 'ignore'
-    });
-    
-    child.unref();
+    child.on('close', () => clearTimeout(timeout));
   });
   
   // BACKUP AUTOMATICO GIORNALIERO
@@ -976,8 +996,7 @@ if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
     event: 'cron_initialized',
     jobs: [
       'Scraping completo: 02:00 (max 4h)',
-      'Stock check completo: 07:00, 09:30, 12:00, 14:30, 17:00, 19:30, 22:00 (max 2h)',
-      'Stock check parziale: 09:30, 11:30, 14:30, 16:30, 19:30',
+      'Stock check: 07:00, 09:00, 12:00, 14:00, 17:00, 19:00, 22:00 (max 2h)',
       'Backup giornaliero: 05:00'
     ]
   });
@@ -995,13 +1014,16 @@ process.on('SIGTERM', () => {
     event: 'shutdown_start'
   });
   
-  // Attendi che i processi finiscano
+  // Cleanup locks
+  LockManager.removeLock(scraperLockPath);
+  LockManager.removeLock(stockLockPath);
+  
   setTimeout(() => {
     logger.log('Shutdown complete', 'INFO', {
       event: 'shutdown_complete'
     });
     process.exit(0);
-  }, 10000);
+  }, 5000);
 });
 
 process.on('uncaughtException', (error) => {
@@ -1023,22 +1045,24 @@ process.on('unhandledRejection', (reason, promise) => {
 // SERVER START
 // =====================================================
 
+// Ensure directories before starting
+ensureDirectories();
+
 app.listen(PORT, () => {
   logger.log('╔══════════════════════════════════════════════╗', 'INFO');
-  logger.log('║     SCRAPER SERVER PROFESSIONALE AVVIATO     ║', 'INFO');
+  logger.log('║   SCRAPER SERVER v3.0 FIXED - AVVIATO       ║', 'INFO');
   logger.log('╚══════════════════════════════════════════════╝', 'INFO');
   logger.log(`Server: http://localhost:${PORT}`, 'INFO');
   logger.log(`Environment: ${process.env.NODE_ENV || 'development'}`, 'INFO');
   logger.log(`Render: ${process.env.RENDER ? 'Yes' : 'No'}`, 'INFO');
   logger.log(`Data Directory: ${dataDir}`, 'INFO');
-  logger.log(`Public URL: https://scraper-cd.onrender.com`, 'INFO');
   
   if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
     logger.log('\n⚡ SISTEMA OTTIMIZZATO ATTIVO:', 'INFO');
     logger.log('• Scraping completo: ogni notte ore 2:00 (max 4h)', 'INFO');
-    logger.log('• Stock check: ogni 2.5h dalle 7:00 alle 22:00 (max 2h)', 'INFO');
-    logger.log('• Stock parziale: controlli supplementari ore di punta', 'INFO');
+    logger.log('• Stock check: ogni 2-3h dalle 7:00 alle 22:00 (max 2h)', 'INFO');
     logger.log('• Backup automatico: ogni giorno ore 5:00', 'INFO');
+    logger.log('• Lock management: prevenzione esecuzioni multiple', 'INFO');
     logger.log('• Logging professionale: JSON + Eventi', 'INFO');
     logger.log('• Tracking processi: Real-time monitoring', 'INFO');
   }
