@@ -6,7 +6,7 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, exec } = require('child_process');
 const cron = require('node-cron');
 
 const app = express();
@@ -20,6 +20,19 @@ const outputDir = path.join(outputBase, 'output');
 const csvLatestPath = path.join(outputDir, 'prodotti_latest.csv');
 const csvMinPath = path.join(outputDir, 'prodotti_wpimport_min.csv');
 const logPath = path.join(outputDir, 'scraper.log');
+const dashboardLogPath = path.join(outputDir, 'dashboard.log');
+
+// 🆕 Sistema di logging eventi dashboard
+function logDashboardEvent(action, details = '', req = null) {
+  const timestamp = new Date().toISOString();
+  const ip = req ? (req.ip || req.headers['x-forwarded-for'] || 'unknown') : 'server';
+  const line = `[${timestamp}] [DASHBOARD] [${ip}] ${action} ${details}\n`;
+  
+  console.log(line.trim());
+  try {
+    fs.appendFileSync(dashboardLogPath, line);
+  } catch (e) {}
+}
 
 // Serve immagini statiche
 app.use('/images', express.static(path.join(outputDir, 'images')));
@@ -41,6 +54,8 @@ function getLatestCsvPath() {
 
 // Dashboard principale
 app.get('/', (req, res) => {
+  logDashboardEvent('PAGE_VIEW', '', req);
+  
   const stats = getStats();
   const base = publicBase(req);
   
@@ -194,6 +209,33 @@ app.get('/', (req, res) => {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.5; }
         }
+        .tab-container {
+          margin-top: 20px;
+        }
+        .tab-buttons {
+          display: flex;
+          gap: 10px;
+          margin-bottom: 10px;
+        }
+        .tab-button {
+          padding: 10px 20px;
+          background: rgba(255,255,255,0.2);
+          color: white;
+          border: none;
+          border-radius: 5px;
+          cursor: pointer;
+          transition: background 0.3s;
+        }
+        .tab-button.active {
+          background: white;
+          color: #667eea;
+        }
+        .tab-content {
+          display: none;
+        }
+        .tab-content.active {
+          display: block;
+        }
       </style>
     </head>
     <body>
@@ -206,7 +248,8 @@ app.get('/', (req, res) => {
           • <strong>Stock check veloce (6-22 ogni 2h):</strong> VELOCE 1.5h - Solo stock e quantità<br>
           • <strong>45.000 verifiche stock/giorno</strong> ✅<br>
           • <strong>Finestra overselling: MAX 2 ORE</strong> ✅<br>
-          • <strong>Sistema di LOCK anti-sovrapposizione</strong> ✅
+          • <strong>Sistema di LOCK anti-sovrapposizione</strong> ✅<br>
+          • <strong>Logging completo eventi dashboard</strong> ✅
         </div>
 
         <div class="grid">
@@ -353,13 +396,42 @@ app.get('/', (req, res) => {
           </ul>
         </div>
 
-        <div class="card" style="margin-top: 20px;">
-          <h2>📋 Ultimi Log (50 righe)</h2>
-          <div class="logs">${stats.logs}</div>
+        <div class="card tab-container">
+          <h2>📋 Log System</h2>
+          <div class="tab-buttons">
+            <button class="tab-button active" onclick="switchTab('scraper')">Scraper Log</button>
+            <button class="tab-button" onclick="switchTab('stock')">Stock Checker Log</button>
+            <button class="tab-button" onclick="switchTab('dashboard')">Dashboard Log</button>
+          </div>
+          
+          <div id="tab-scraper" class="tab-content active">
+            <h3 style="margin-bottom: 10px;">Scraper Log (50 righe)</h3>
+            <div class="logs">${stats.scraperLogs}</div>
+          </div>
+          
+          <div id="tab-stock" class="tab-content">
+            <h3 style="margin-bottom: 10px;">Stock Checker Log (50 righe)</h3>
+            <div class="logs">${stats.stockLogs}</div>
+          </div>
+          
+          <div id="tab-dashboard" class="tab-content">
+            <h3 style="margin-bottom: 10px;">Dashboard Events (50 righe)</h3>
+            <div class="logs">${stats.dashboardLogs}</div>
+          </div>
         </div>
       </div>
 
       <script>
+        function switchTab(tab) {
+          // Remove active from all
+          document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+          document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+          
+          // Add active to selected
+          document.querySelector('.tab-button[onclick*="' + tab + '"]').classList.add('active');
+          document.getElementById('tab-' + tab).classList.add('active');
+        }
+
         function runFullScan(pages) {
           if (confirm('🔄 Avviare FULL SCAN su ' + pages + ' pagine?\\n\\n⏱️ Durata stimata: ~' + Math.ceil(pages * 1.2) + ' minuti\\n\\n📋 Questa operazione:\\n• Aggiorna TUTTI i dati (prezzi, nomi, descrizioni)\\n• Scarica/aggiorna immagini\\n• Crea nuovo CSV completo\\n• Può richiedere diverse ore per 200 pagine\\n\\n⚠️ Non lanciare se uno scan è già attivo!')) {
             fetch('/run-full-scan?pages=' + pages, { method: 'POST' })
@@ -428,14 +500,17 @@ app.get('/', (req, res) => {
 app.post('/run-full-scan', (req, res) => {
   const pages = req.query.pages || 200;
   
+  logDashboardEvent('FULL_SCAN_REQUEST', `pages=${pages}`, req);
+  
   // Verifica se scraper già in corso
   const scraperLockPath = path.join(outputDir, 'scraper.lock');
   if (fs.existsSync(scraperLockPath)) {
     const lockData = JSON.parse(fs.readFileSync(scraperLockPath, 'utf8'));
     const lockAge = Date.now() - lockData.timestamp;
     
-    // Se lock ha più di 4 ore, è stale
+    // Lock stale dopo 4 ore
     if (lockAge < 14400000) {
+      logDashboardEvent('FULL_SCAN_BLOCKED', `già in corso da ${Math.floor(lockAge/60000)} min`, req);
       return res.json({ 
         success: false,
         message: 'Full scan già in corso! Avviato da ' + Math.floor(lockAge / 60000) + ' minuti.'
@@ -443,6 +518,7 @@ app.post('/run-full-scan', (req, res) => {
     } else {
       // Rimuovi lock stale
       fs.unlinkSync(scraperLockPath);
+      logDashboardEvent('FULL_SCAN_LOCK_REMOVED', 'stale lock removed', req);
     }
   }
   
@@ -451,13 +527,16 @@ app.post('/run-full-scan', (req, res) => {
     pid: process.pid,
     timestamp: Date.now(),
     startedAt: new Date().toISOString(),
-    pages: pages
+    pages: pages,
+    triggeredBy: 'dashboard'
   }));
   
   spawn('node', ['scraper_componenti_wpai_min.js', pages], {
     detached: true,
     stdio: 'ignore'
   }).unref();
+  
+  logDashboardEvent('FULL_SCAN_STARTED', `pages=${pages}, estimated=${Math.ceil(pages * 1.2)}min`, req);
   
   res.json({ 
     success: true,
@@ -468,10 +547,11 @@ app.post('/run-full-scan', (req, res) => {
 
 // 🆕 Endpoint per fermare Full Scan
 app.post('/stop-full-scan', (req, res) => {
-  const { exec } = require('child_process');
+  logDashboardEvent('FULL_SCAN_STOP_REQUEST', '', req);
   
   exec('pkill -SIGTERM -f scraper_componenti_wpai_min.js', (error) => {
     if (error) {
+      logDashboardEvent('FULL_SCAN_STOP_FAILED', 'nessun processo attivo', req);
       return res.json({ 
         success: false,
         message: 'Nessun Full Scan in corso da fermare.'
@@ -484,6 +564,8 @@ app.post('/stop-full-scan', (req, res) => {
       fs.unlinkSync(scraperLockPath);
     }
     
+    logDashboardEvent('FULL_SCAN_STOPPED', 'checkpoint salvato', req);
+    
     res.json({ 
       success: true,
       message: 'Full Scan fermato. Checkpoint salvato.' 
@@ -495,20 +577,24 @@ app.post('/stop-full-scan', (req, res) => {
 app.post('/run-stock-check', (req, res) => {
   const limit = req.query.limit || 100;
   
+  logDashboardEvent('STOCK_CHECK_REQUEST', `limit=${limit}`, req);
+  
   // Verifica se stock-checker già in corso
   const stockLockPath = path.join(outputDir, 'stock_checker.lock');
   if (fs.existsSync(stockLockPath)) {
     const lockData = JSON.parse(fs.readFileSync(stockLockPath, 'utf8'));
     const lockAge = Date.now() - lockData.timestamp;
     
-    // Se lock ha più di 2 ore, è stale
+    // Lock stale dopo 2 ore
     if (lockAge < 7200000) {
+      logDashboardEvent('STOCK_CHECK_BLOCKED', `già in corso da ${Math.floor(lockAge/60000)} min`, req);
       return res.json({ 
         success: false,
         message: 'Stock check già in corso! Avviato da ' + Math.floor(lockAge / 60000) + ' minuti.'
       });
     } else {
       fs.unlinkSync(stockLockPath);
+      logDashboardEvent('STOCK_CHECK_LOCK_REMOVED', 'stale lock removed', req);
     }
   }
   
@@ -516,6 +602,8 @@ app.post('/run-stock-check', (req, res) => {
     detached: true,
     stdio: 'ignore'
   }).unref();
+  
+  logDashboardEvent('STOCK_CHECK_STARTED', `limit=${limit}, estimated=${Math.ceil(limit/60)}min`, req);
   
   res.json({ 
     success: true,
@@ -526,10 +614,11 @@ app.post('/run-stock-check', (req, res) => {
 
 // 🆕 Endpoint per fermare Stock Check
 app.post('/stop-stock-check', (req, res) => {
-  const { exec } = require('child_process');
+  logDashboardEvent('STOCK_CHECK_STOP_REQUEST', '', req);
   
   exec('pkill -SIGTERM -f stock-checker-light.js', (error) => {
     if (error) {
+      logDashboardEvent('STOCK_CHECK_STOP_FAILED', 'nessun processo attivo', req);
       return res.json({ 
         success: false,
         message: 'Nessuno Stock Check in corso da fermare.'
@@ -540,6 +629,8 @@ app.post('/stop-stock-check', (req, res) => {
     if (fs.existsSync(stockLockPath)) {
       fs.unlinkSync(stockLockPath);
     }
+    
+    logDashboardEvent('STOCK_CHECK_STOPPED', 'progresso salvato', req);
     
     res.json({ 
       success: true,
@@ -563,7 +654,9 @@ function getStats() {
     csvFiles: [],
     imagesCount: 0,
     imagesSize: 0,
-    logs: 'Caricamento...',
+    scraperLogs: 'Nessun log disponibile',
+    stockLogs: 'Nessun log disponibile',
+    dashboardLogs: 'Nessun log disponibile',
     checkpoint: null,
     stockProgress: null,
     scraperLock: null,
@@ -668,13 +761,28 @@ function getStats() {
         stats.stockCheckerLock = JSON.parse(fs.readFileSync(stockLockPath, 'utf8'));
       }
       
-      // Logs
-      const logFiles = files.filter(f => f.endsWith('.log')).sort();
-      if (logFiles.length > 0) {
-        const latestLog = path.join(outputDir, logFiles[logFiles.length - 1]);
-        const logs = fs.readFileSync(latestLog, 'utf8');
+      // 🆕 Scraper Logs
+      const scraperLogPath = path.join(outputDir, 'scraper.log');
+      if (fs.existsSync(scraperLogPath)) {
+        const logs = fs.readFileSync(scraperLogPath, 'utf8');
         const lines = logs.split('\n');
-        stats.logs = lines.slice(-50).join('\n');
+        stats.scraperLogs = lines.slice(-50).join('\n');
+      }
+      
+      // 🆕 Stock Checker Logs
+      const stockLogFiles = files.filter(f => f.startsWith('stock_checker_') && f.endsWith('.log')).sort();
+      if (stockLogFiles.length > 0) {
+        const latestStockLog = path.join(outputDir, stockLogFiles[stockLogFiles.length - 1]);
+        const logs = fs.readFileSync(latestStockLog, 'utf8');
+        const lines = logs.split('\n');
+        stats.stockLogs = lines.slice(-50).join('\n');
+      }
+      
+      // 🆕 Dashboard Logs
+      if (fs.existsSync(dashboardLogPath)) {
+        const logs = fs.readFileSync(dashboardLogPath, 'utf8');
+        const lines = logs.split('\n');
+        stats.dashboardLogs = lines.slice(-50).join('\n');
       }
     }
   } catch (error) {
@@ -757,49 +865,61 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📊 Dashboard: http://localhost:${PORT}`);
   console.log(`📁 Output directory: ${outputDir}`);
   
+  logDashboardEvent('SERVER_STARTED', `port=${PORT}, node=${process.version}`);
+  
   // Setup cron jobs solo in produzione
   if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
     console.log('\n🔧 Configurazione CRON jobs...');
+    
+    logDashboardEvent('CRON_INITIALIZED', 'production mode');
   
-  // ✅ Full scan SOLO mezzanotte - LENTO per accuratezza
-  cron.schedule('0 0 * * *', () => {
-    console.log('[CRON] Full scan notturno LENTO - 200 pagine ~4h (tutti i dati)');
+    // ✅ Full scan SOLO mezzanotte
+    cron.schedule('0 0 * * *', () => {
+      logDashboardEvent('CRON_FULL_SCAN', 'triggered at 00:00 UTC');
+      console.log('[CRON] Full scan notturno LENTO - 200 pagine ~4h');
+      
+      const scraperLockPath = path.join(outputDir, 'scraper.lock');
+      if (fs.existsSync(scraperLockPath)) {
+        logDashboardEvent('CRON_FULL_SCAN_SKIPPED', 'lock exists');
+        console.log('[CRON] ⚠️ Full scan già in corso, skip');
+        return;
+      }
+      
+      spawn('node', ['scraper_componenti_wpai_min.js', '200'], {
+        detached: true,
+        stdio: 'ignore'
+      }).unref();
+      
+      logDashboardEvent('CRON_FULL_SCAN_STARTED', 'pages=200');
+    });
     
-    // Verifica lock prima di lanciare
-    const scraperLockPath = path.join(outputDir, 'scraper.lock');
-    if (fs.existsSync(scraperLockPath)) {
-      console.log('[CRON] ⚠️ Full scan già in corso, skip');
-      return;
-    }
+    // ✅ Stock check ogni 2h dalle 6 alle 22
+    cron.schedule('0 6,8,10,12,14,16,18,20,22 * * *', () => {
+      const hour = new Date().getUTCHours();
+      logDashboardEvent('CRON_STOCK_CHECK', `triggered at ${hour}:00 UTC`);
+      console.log('[CRON] Stock check VELOCE - 5000 prodotti ~1.5h');
+      
+      const stockLockPath = path.join(outputDir, 'stock_checker.lock');
+      if (fs.existsSync(stockLockPath)) {
+        logDashboardEvent('CRON_STOCK_CHECK_SKIPPED', 'lock exists');
+        console.log('[CRON] ⚠️ Stock check già in corso, skip questo turno');
+        return;
+      }
+      
+      spawn('node', ['stock-checker-light.js', '5000'], {
+        detached: true,
+        stdio: 'ignore'
+      }).unref();
+      
+      logDashboardEvent('CRON_STOCK_CHECK_STARTED', 'limit=5000');
+    });
     
-    spawn('node', ['scraper_componenti_wpai_min.js', '200'], {
-      detached: true,
-      stdio: 'ignore'
-    }).unref();
-  });
-  
-  // ✅ Stock check ogni 2h dalle 6 alle 22 - VELOCE
-  cron.schedule('0 6,8,10,12,14,16,18,20,22 * * *', () => {
-    console.log('[CRON] Stock check VELOCE - 5000 prodotti ~1.5h (solo stock/quantity)');
-    
-    // Verifica lock prima di lanciare
-    const stockLockPath = path.join(outputDir, 'stock_checker.lock');
-    if (fs.existsSync(stockLockPath)) {
-      console.log('[CRON] ⚠️ Stock check già in corso, skip questo turno');
-      return;
-    }
-    
-    spawn('node', ['stock-checker-light.js', '5000'], {
-      detached: true,
-      stdio: 'ignore'
-    }).unref();
-  });
-  
-  console.log('⏰ CRON CONFIGURATI:');
-  console.log('   ✅ Full scan: SOLO 00:00 UTC - LENTO (4h) per massima accuratezza');
-  console.log('   ✅ Stock check: 6,8,10,12,14,16,18,20,22 UTC - VELOCE (1.5h) solo stock');
-  console.log('   ✅ 9 check/giorno × 5000 = 45.000 verifiche stock');
-  console.log('   ✅ Sistema LOCK anti-sovrapposizione attivo');
+    console.log('⏰ CRON CONFIGURATI:');
+    console.log('   ✅ Full scan: SOLO 00:00 UTC - LENTO (4h)');
+    console.log('   ✅ Stock check: 6,8,10,12,14,16,18,20,22 UTC - VELOCE (1.5h)');
+    console.log('   ✅ 9 check/giorno × 5000 = 45.000 verifiche stock');
+    console.log('   ✅ Sistema LOCK anti-sovrapposizione attivo');
+    console.log('   ✅ Logging completo eventi dashboard');
   }
   
   if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
@@ -809,5 +929,30 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log('• 45.000 verifiche stock/giorno');
     console.log('• Checkpoint anti-crash attivo');
     console.log('• Sistema LOCK per evitare sovrapposizioni');
+    console.log('• Logging completo eventi dashboard');
   }
 });
+```
+
+---
+
+# ✅ TUTTO OK - LOGGING COMPLETO
+
+Dashboard ora logga:
+- ✅ Visualizzazioni pagina
+- ✅ Click pulsanti Full Scan
+- ✅ Click pulsanti Stock Check
+- ✅ Stop manuali
+- ✅ CRON trigger
+- ✅ Lock skip
+- ✅ Start/Stop processi
+- ✅ IP utente (se disponibile)
+- ✅ 3 tab separati: Scraper / Stock / Dashboard
+
+**Log dashboard.log esempio:**
+```
+[2025-11-11T08:00:00.000Z] [DASHBOARD] [server] CRON_STOCK_CHECK triggered at 8:00 UTC
+[2025-11-11T08:00:00.123Z] [DASHBOARD] [server] CRON_STOCK_CHECK_STARTED limit=5000
+[2025-11-11T09:15:30.456Z] [DASHBOARD] [192.168.1.1] PAGE_VIEW
+[2025-11-11T09:16:45.789Z] [DASHBOARD] [192.168.1.1] FULL_SCAN_REQUEST pages=20
+[2025-11-11T09:16:46.012Z] [DASHBOARD] [192.168.1.1] FULL_SCAN_STARTED pages=20, estimated=24min
