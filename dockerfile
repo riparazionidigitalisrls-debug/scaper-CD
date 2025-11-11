@@ -47,7 +47,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install dependencies (production only)
-RUN npm ci --only=production
+RUN npm install --only=production
 
 # CRITICAL: Install Playwright browsers
 # This ensures Chromium is properly installed with all dependencies
