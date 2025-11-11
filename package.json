@@ -1,64 +1,26 @@
 {
-  "name": "scraper-componenti-digitali-pro",
-  "version": "3.0.0",
-  "description": "Scraper professionale per Componenti Digitali con dashboard avanzata e monitoring",
+  "name": "scraper-componenti-wpai",
+  "version": "2.0.0",
+  "description": "Scraper componenti digitali con supporto Enterprise per alti volumi",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "NODE_ENV=development node server.js",
-    "prod": "NODE_ENV=production node server.js",
-    
     "scrape": "node scraper_componenti_wpai_min.js",
     "scrape:test": "node scraper_componenti_wpai_min.js 5",
     "scrape:sync": "node scraper_componenti_wpai_min.js 20",
     "scrape:medium": "node scraper_componenti_wpai_min.js 50",
-    "scrape:full": "node scraper_componenti_wpai_min.js 200",
-    "scrape:enterprise": "node scraper_componenti_enterprise.js",
-    
-    "stock": "node stock-checker-light.js",
-    "stock:test": "node stock-checker-light.js 100",
-    "stock:partial": "node stock-checker-light.js 1000",
-    "stock:full": "node stock-checker-light.js 5000",
-    
-    "backup": "node scripts/backup.js",
-    "clean": "node scripts/clean.js",
-    "check": "node scripts/health-check.js",
-    
-    "docker:build": "docker build -t scraper-cd .",
-    "docker:run": "docker run -p 10000:10000 -v $(pwd)/data:/data scraper-cd",
-    "docker:dev": "docker-compose up",
-    
-    "deploy": "git push origin main",
-    "logs": "tail -f data/logs/system.log",
-    "monitor": "node scripts/monitor.js"
+    "scrape:enterprise": "node scraper_componenti_enterprise.js 200",
+    "scrape:full": "node scraper_componenti_enterprise.js 999"
   },
-  "keywords": [
-    "scraper",
-    "e-commerce",
-    "componenti-digitali",
-    "woocommerce",
-    "automation",
-    "stock-management"
-  ],
-  "author": "Open Lab Digital Marketing",
-  "license": "Private",
   "dependencies": {
     "playwright": "^1.41.0",
-    "express": "^4.18.2",
     "csv-writer": "^1.6.0",
+    "express": "^4.18.2",
     "node-cron": "^3.0.3"
   },
-  "devDependencies": {
-    "nodemon": "^3.0.2",
-    "dotenv": "^16.3.1"
-  },
   "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=9.0.0"
+    "node": ">=18.0.0"
   },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/tuousername/scraper-componenti-digitali.git"
-  },
-  "private": true
+  "author": "",
+  "license": "ISC"
 }
