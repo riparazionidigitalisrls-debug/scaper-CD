@@ -1,5 +1,5 @@
-// scraper_componenti_wpai_min.js v2.4
-// Versione finale ottimizzata con sistema di LOCK
+// scraper_componenti_wpai_min.js v2.5
+// Versione finale ottimizzata con sistema di LOCK completo
 
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -20,7 +20,7 @@ class ScraperWPAIFinal {
     this.csvTmpPath   = path.join(this.outputDir, 'prodotti_latest.tmp.csv');
     this.logPath      = path.join(this.outputDir, 'scraper.log');
     this.checkpointPath = path.join(this.outputDir, 'scraper_checkpoint.json');
-    this.lockPath = path.join(this.outputDir, 'scraper.lock'); // 🆕 LOCK
+    this.lockPath = path.join(this.outputDir, 'scraper.lock');
 
     this.imagesHostBaseUrl = process.env.IMAGES_BASE_URL || '';
     
@@ -67,7 +67,7 @@ class ScraperWPAIFinal {
     try { fs.appendFileSync(this.logPath, line + '\n'); } catch (_) {}
   }
 
-  // 🆕 SISTEMA DI LOCK
+  // SISTEMA DI LOCK
   async acquireLock() {
     try {
       if (fs.existsSync(this.lockPath)) {
@@ -152,7 +152,7 @@ class ScraperWPAIFinal {
     try {
       if (fs.existsSync(this.checkpointPath)) {
         await fsp.unlink(this.checkpointPath);
-        this.log('✓ Checkpoint eliminato');
+        this.log('✓ Checkpoint eliminato (completato con successo)');
       }
     } catch (e) {
       this.log(`Errore eliminazione checkpoint: ${e.message}`);
@@ -567,7 +567,7 @@ class ScraperWPAIFinal {
         if (n % this.saveProgressEvery === 0) {
           await this.saveCSV();
           await this.saveCheckpoint(n);
-          this.log(`💾 Progress: ${this.products.length} prodotti, pagina ${n}`);
+          this.log(`💾 Progress salvato: ${this.products.length} prodotti fino a pagina ${n}`);
         }
         
         if (next && next !== url) {
@@ -579,7 +579,7 @@ class ScraperWPAIFinal {
         }
       }
 
-      this.log(`COMPLETATO: ${n} pagine, ${this.products.length} prodotti`);
+      this.log(`COMPLETATO: ${n} pagine, ${this.products.length} prodotti unici`);
     } finally {
       await browser.close();
     }
@@ -608,12 +608,12 @@ class ScraperWPAIFinal {
     const withColor = this.products.filter(p => p['attribute:pa_colore']).length;
     const withRealStock = this.products.filter(p => p.stock_quantity > 0 && p.stock_quantity !== 10).length;
     
-    this.log(`Stats: ${withNames} nomi, ${withPrices} prezzi, ${withBrands} brand`);
-    this.log(`Attributi: ${withCompat} compatibilità, ${withColor} colore, ${withRealStock} stock preciso`);
+    this.log(`Statistiche: ${withNames} con nome, ${withPrices} con prezzo, ${withBrands} con brand`);
+    this.log(`Attributi: ${withCompat} con compatibilità, ${withColor} con colore, ${withRealStock} con stock preciso`);
   }
 
   async run(maxPages = 20) {
-    // 🆕 Acquisisci lock
+    // Acquisisci lock
     if (!await this.acquireLock()) {
       this.log('❌ Scraper già in corso, uscita');
       return;
@@ -632,14 +632,14 @@ class ScraperWPAIFinal {
             this.log('✅ CSV salvato');
           }
           
-          this.log('✅ Checkpoint mantenuto');
-          await this.releaseLock(); // 🆕 Rilascia lock
-          this.log('✅ Graceful shutdown');
+          this.log('✅ Checkpoint mantenuto per resume');
+          await this.releaseLock();
+          this.log('✅ Graceful shutdown completato');
           
           process.exit(0);
         } catch (err) {
           this.log(`❌ Errore shutdown: ${err.message}`);
-          await this.releaseLock(); // 🆕 Rilascia lock anche su errore
+          await this.releaseLock();
           process.exit(1);
         }
       };
@@ -647,27 +647,30 @@ class ScraperWPAIFinal {
       process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
       process.on('SIGINT', () => gracefulShutdown('SIGINT'));
       
-      const startUrl = `${this.baseUrl}/default.asp?cmdString=iphone&cmd=searchProd&bFormSearch=1`;
+      const startUrl = `${this.baseUrl}/default.asp?cmdString=iphone&cmd=searchProd&bFormSearch=1&orderBy=descA`;
       
       await this.scrapeAll(startUrl, maxPages);
       await this.saveCSV();
       await this.clearCheckpoint();
-      this.log('✅ Completato');
+      await this.releaseLock(); // 🆕 AGGIUNTO - CRITICO!
+      this.log('✅ Scraping completato con successo');
       
     } catch (err) {
-      this.log(`❌ ERRORE: ${err.message}`);
+      this.log(`❌ ERRORE FATALE: ${err.message}`);
       this.log(`Stack: ${err.stack}`);
       
       if (this.products.length > 0) {
-        this.log('⚠️ Salvataggio parziale');
-        await this.saveCSV();
-        this.log('✅ CSV parziale salvato');
+        this.log('⚠️ Tentativo salvataggio parziale');
+        try {
+          await this.saveCSV();
+          this.log('✅ CSV parziale salvato');
+        } catch (saveErr) {
+          this.log(`❌ Errore salvataggio parziale: ${saveErr.message}`);
+        }
       }
       
-      throw err;
-    } finally {
-      // 🆕 Rilascia sempre lock
       await this.releaseLock();
+      throw err;
     }
   }
 }
