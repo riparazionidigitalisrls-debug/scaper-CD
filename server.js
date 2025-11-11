@@ -16,7 +16,7 @@ const PORT = process.env.PORT || 10000;
 const outputBase = process.env.DATA_DIR || (process.env.RENDER ? '/data' : '.');
 const outputDir = path.join(outputBase, 'output');
 
-// File paths - supporta sia legacy che nuovo sistema
+// File paths
 const csvLatestPath = path.join(outputDir, 'prodotti_latest.csv');
 const csvMinPath = path.join(outputDir, 'prodotti_wpimport_min.csv');
 const logPath = path.join(outputDir, 'scraper.log');
@@ -32,12 +32,6 @@ function publicBase(req) {
   return `${proto}://${host}`;
 }
 
-// Helper per scegliere lo scraper giusto
-function getScraperScript(pages) {
-  // Usa sempre scraper standard (selettori più robusti)
-  return 'scraper_componenti_wpai_min.js';
-}
-
 // Helper per check esistenza file
 function getLatestCsvPath() {
   if (fs.existsSync(csvLatestPath)) return csvLatestPath;
@@ -45,7 +39,7 @@ function getLatestCsvPath() {
   return null;
 }
 
-// Dashboard principale migliorata
+// Dashboard principale
 app.get('/', (req, res) => {
   const stats = getStats();
   const base = publicBase(req);
@@ -95,6 +89,8 @@ app.get('/', (req, res) => {
         button.enterprise:hover { background: #d97706; }
         button.stock { background: #10b981; }
         button.stock:hover { background: #059669; }
+        button.danger { background: #ef4444; }
+        button.danger:hover { background: #dc2626; }
         .logs { 
           background: #1a1a1a; 
           color: #0f0; 
@@ -133,9 +129,12 @@ app.get('/', (req, res) => {
           border-radius: 12px;
           font-size: 11px;
           font-weight: bold;
+          display: inline-block;
+          margin-bottom: 10px;
         }
         .badge.green { background: #10b981; }
         .badge.red { background: #ef4444; }
+        .badge.orange { background: #f59e0b; }
         .system-health {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -177,19 +176,37 @@ app.get('/', (req, res) => {
           font-size: 12px;
           font-weight: bold;
         }
+        .section-divider {
+          border-top: 2px solid rgba(255,255,255,0.2);
+          margin: 15px 0;
+          padding-top: 15px;
+        }
+        .lock-indicator {
+          display: inline-block;
+          width: 10px;
+          height: 10px;
+          border-radius: 50%;
+          margin-right: 8px;
+        }
+        .lock-indicator.active { background: #ef4444; animation: pulse 2s infinite; }
+        .lock-indicator.idle { background: #10b981; }
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
       </style>
     </head>
     <body>
       <div class="container">
-        <h1>🚀 Scraper Componenti Digitali - Dashboard</h1>
+        <h1>🚀 Scraper Componenti Digitali - Dashboard v2.4</h1>
         
         <div class="alert">
-          <strong>✅ SISTEMA FINALE v2.3:</strong><br>
+          <strong>✅ SISTEMA FINALE v2.4:</strong><br>
           • <strong>Full scan notturno (00:00 UTC):</strong> LENTO 4h - Tutti i dati (prezzi, stock, immagini, attributi)<br>
           • <strong>Stock check veloce (6-22 ogni 2h):</strong> VELOCE 1.5h - Solo stock e quantità<br>
           • <strong>45.000 verifiche stock/giorno</strong> ✅<br>
           • <strong>Finestra overselling: MAX 2 ORE</strong> ✅<br>
-          • <strong>Checkpoint anti-crash</strong> ✅
+          • <strong>Sistema di LOCK anti-sovrapposizione</strong> ✅
         </div>
 
         <div class="grid">
@@ -239,17 +256,39 @@ app.get('/', (req, res) => {
 
         <div class="card" style="margin-top: 20px;">
           <h2>⚙️ Controlli Manuali</h2>
+          
+          <div style="margin-bottom: 20px;">
+            <div style="display: flex; align-items: center; margin-bottom: 10px;">
+              <span class="lock-indicator ${stats.scraperLock ? 'active' : 'idle'}"></span>
+              <span class="badge orange">🔄 Full Scan (Tutti i dati - 2-4h)</span>
+              ${stats.scraperLock ? '<span style="margin-left: 10px; color: #ef4444; font-weight: bold;">IN CORSO</span>' : ''}
+            </div>
+            <button onclick="runFullScan(5)" class="enterprise">Test 5 pagine (~10 min)</button>
+            <button onclick="runFullScan(20)" class="enterprise">Test 20 pagine (~40 min)</button>
+            <button onclick="runFullScan(50)" class="enterprise">Scan 50 pagine (~1.5 h)</button>
+            <button onclick="runFullScan(200)" class="enterprise">Full 200 pagine (~4 h)</button>
+            ${stats.scraperLock ? '<button onclick="stopFullScan()" class="danger">⏹️ Stop Full Scan</button>' : ''}
+          </div>
+          
+          <div class="section-divider"></div>
+          
           <div>
-            <span class="badge">Stock Check (SOLO disponibilità - fino a 60 min):</span><br><br>
-            <button class="stock" onclick="runStockCheck(100)">Test 100 prodotti</button>
-            <button class="stock" onclick="runStockCheck(500)">Check 500 prodotti</button>
-            <button class="stock" onclick="runStockCheck(1000)">Check 1000 prodotti</button>
+            <div style="display: flex; align-items: center; margin-bottom: 10px;">
+              <span class="lock-indicator ${stats.stockCheckerLock ? 'active' : 'idle'}"></span>
+              <span class="badge green">📊 Stock Check (Solo stock - max 1.5h)</span>
+              ${stats.stockCheckerLock ? '<span style="margin-left: 10px; color: #ef4444; font-weight: bold;">IN CORSO</span>' : ''}
+            </div>
+            <button class="stock" onclick="runStockCheck(100)">Test 100 prodotti (~10 min)</button>
+            <button class="stock" onclick="runStockCheck(500)">Check 500 prodotti (~30 min)</button>
+            <button class="stock" onclick="runStockCheck(1000)">Check 1000 prodotti (~1 h)</button>
+            <button class="stock" onclick="runStockCheck(5000)">Full 5000 prodotti (~1.5 h)</button>
+            ${stats.stockCheckerLock ? '<button onclick="stopStockCheck()" class="danger">⏹️ Stop Stock Check</button>' : ''}
           </div>
         </div>
 
         ${stats.checkpoint ? `
         <div class="card" style="margin-top: 20px;">
-          <h2>🔄 Checkpoint Attivo</h2>
+          <h2>🔄 Checkpoint Scraper Attivo</h2>
           <div class="alert info">
             <strong>Resume disponibile:</strong><br>
             Pagina corrente: ${stats.checkpoint.currentPage || 'N/A'}<br>
@@ -266,7 +305,14 @@ app.get('/', (req, res) => {
             <strong>Progresso:</strong><br>
             Prodotti controllati: ${stats.stockProgress.checked || 0} / ${stats.stockProgress.total || 0}<br>
             Aggiornati: ${stats.stockProgress.updated || 0}<br>
+            Nuovi esauriti: ${stats.stockProgress.newOutOfStock || 0}<br>
+            Tornati disponibili: ${stats.stockProgress.backInStock || 0}<br>
             In corso da: ${new Date(stats.stockProgress.timestamp).toLocaleString('it-IT')}
+            <div class="progress-bar" style="margin-top: 10px;">
+              <div class="progress-fill" style="width: ${Math.round((stats.stockProgress.checked / stats.stockProgress.total) * 100)}%">
+                ${Math.round((stats.stockProgress.checked / stats.stockProgress.total) * 100)}%
+              </div>
+            </div>
           </div>
         </div>
         ` : ''}
@@ -314,9 +360,53 @@ app.get('/', (req, res) => {
       </div>
 
       <script>
+        function runFullScan(pages) {
+          if (confirm('🔄 Avviare FULL SCAN su ' + pages + ' pagine?\\n\\n⏱️ Durata stimata: ~' + Math.ceil(pages * 1.2) + ' minuti\\n\\n📋 Questa operazione:\\n• Aggiorna TUTTI i dati (prezzi, nomi, descrizioni)\\n• Scarica/aggiorna immagini\\n• Crea nuovo CSV completo\\n• Può richiedere diverse ore per 200 pagine\\n\\n⚠️ Non lanciare se uno scan è già attivo!')) {
+            fetch('/run-full-scan?pages=' + pages, { method: 'POST' })
+              .then(r => r.json())
+              .then(data => {
+                if (data.success) {
+                  alert('✅ ' + data.message + '\\n\\n⏱️ Tempo previsto: ' + data.estimatedTime + '\\n\\n💡 Aggiorna la pagina tra qualche minuto per vedere i progressi.');
+                } else {
+                  alert('⚠️ ' + data.message);
+                }
+                setTimeout(() => location.reload(), 2000);
+              })
+              .catch(e => alert('❌ Errore: ' + e));
+          }
+        }
+
         function runStockCheck(num) {
-          if (confirm('Avviare stock check su ' + num + ' prodotti?\\n\\nDurata stimata: ' + Math.ceil(num/60) + ' minuti')) {
+          if (confirm('📊 Avviare stock check su ' + num + ' prodotti?\\n\\n⏱️ Durata stimata: ~' + Math.ceil(num/60) + ' minuti\\n\\n📋 Questa operazione:\\n• Controlla solo disponibilità e quantità\\n• NON aggiorna prezzi o altri dati\\n• Veloce e leggero')) {
             fetch('/run-stock-check?limit=' + num, { method: 'POST' })
+              .then(r => r.json())
+              .then(data => {
+                if (data.success) {
+                  alert('✅ ' + data.message + '\\n\\n⏱️ Tempo previsto: ' + data.estimatedTime);
+                } else {
+                  alert('⚠️ ' + data.message);
+                }
+                setTimeout(() => location.reload(), 2000);
+              })
+              .catch(e => alert('❌ Errore: ' + e));
+          }
+        }
+
+        function stopFullScan() {
+          if (confirm('⚠️ Fermare il Full Scan in corso?\\n\\n• Il checkpoint verrà salvato\\n• Potrai riprendere in seguito dalla stessa pagina')) {
+            fetch('/stop-full-scan', { method: 'POST' })
+              .then(r => r.json())
+              .then(data => {
+                alert(data.message);
+                setTimeout(() => location.reload(), 2000);
+              })
+              .catch(e => alert('Errore: ' + e));
+          }
+        }
+
+        function stopStockCheck() {
+          if (confirm('⚠️ Fermare lo Stock Check in corso?\\n\\n• Il progresso verrà salvato\\n• I dati già raccolti verranno mantenuti')) {
+            fetch('/stop-stock-check', { method: 'POST' })
               .then(r => r.json())
               .then(data => {
                 alert(data.message);
@@ -334,9 +424,93 @@ app.get('/', (req, res) => {
   `);
 });
 
+// 🆕 Endpoint per lanciare FULL SCAN manuale
+app.post('/run-full-scan', (req, res) => {
+  const pages = req.query.pages || 200;
+  
+  // Verifica se scraper già in corso
+  const scraperLockPath = path.join(outputDir, 'scraper.lock');
+  if (fs.existsSync(scraperLockPath)) {
+    const lockData = JSON.parse(fs.readFileSync(scraperLockPath, 'utf8'));
+    const lockAge = Date.now() - lockData.timestamp;
+    
+    // Se lock ha più di 4 ore, è stale
+    if (lockAge < 14400000) {
+      return res.json({ 
+        success: false,
+        message: 'Full scan già in corso! Avviato da ' + Math.floor(lockAge / 60000) + ' minuti.'
+      });
+    } else {
+      // Rimuovi lock stale
+      fs.unlinkSync(scraperLockPath);
+    }
+  }
+  
+  // Crea lock file
+  fs.writeFileSync(scraperLockPath, JSON.stringify({
+    pid: process.pid,
+    timestamp: Date.now(),
+    startedAt: new Date().toISOString(),
+    pages: pages
+  }));
+  
+  spawn('node', ['scraper_componenti_wpai_min.js', pages], {
+    detached: true,
+    stdio: 'ignore'
+  }).unref();
+  
+  res.json({ 
+    success: true,
+    message: `Full scan avviato per ${pages} pagine.`,
+    estimatedTime: `${Math.ceil(pages * 1.2)} minuti (~${(pages * 1.2 / 60).toFixed(1)} ore)`
+  });
+});
+
+// 🆕 Endpoint per fermare Full Scan
+app.post('/stop-full-scan', (req, res) => {
+  const { exec } = require('child_process');
+  
+  exec('pkill -SIGTERM -f scraper_componenti_wpai_min.js', (error) => {
+    if (error) {
+      return res.json({ 
+        success: false,
+        message: 'Nessun Full Scan in corso da fermare.'
+      });
+    }
+    
+    // Rimuovi lock
+    const scraperLockPath = path.join(outputDir, 'scraper.lock');
+    if (fs.existsSync(scraperLockPath)) {
+      fs.unlinkSync(scraperLockPath);
+    }
+    
+    res.json({ 
+      success: true,
+      message: 'Full Scan fermato. Checkpoint salvato.' 
+    });
+  });
+});
+
 // Endpoint per eseguire stock check manuale
 app.post('/run-stock-check', (req, res) => {
   const limit = req.query.limit || 100;
+  
+  // Verifica se stock-checker già in corso
+  const stockLockPath = path.join(outputDir, 'stock_checker.lock');
+  if (fs.existsSync(stockLockPath)) {
+    const lockData = JSON.parse(fs.readFileSync(stockLockPath, 'utf8'));
+    const lockAge = Date.now() - lockData.timestamp;
+    
+    // Se lock ha più di 2 ore, è stale
+    if (lockAge < 7200000) {
+      return res.json({ 
+        success: false,
+        message: 'Stock check già in corso! Avviato da ' + Math.floor(lockAge / 60000) + ' minuti.'
+      });
+    } else {
+      fs.unlinkSync(stockLockPath);
+    }
+  }
   
   spawn('node', ['stock-checker-light.js', limit], {
     detached: true,
@@ -344,8 +518,33 @@ app.post('/run-stock-check', (req, res) => {
   }).unref();
   
   res.json({ 
-    message: `Stock check avviato per ${limit} prodotti. Controlla i log tra qualche minuto.`,
+    success: true,
+    message: `Stock check avviato per ${limit} prodotti.`,
     estimatedTime: Math.ceil(limit / 60) + ' minuti'
+  });
+});
+
+// 🆕 Endpoint per fermare Stock Check
+app.post('/stop-stock-check', (req, res) => {
+  const { exec } = require('child_process');
+  
+  exec('pkill -SIGTERM -f stock-checker-light.js', (error) => {
+    if (error) {
+      return res.json({ 
+        success: false,
+        message: 'Nessuno Stock Check in corso da fermare.'
+      });
+    }
+    
+    const stockLockPath = path.join(outputDir, 'stock_checker.lock');
+    if (fs.existsSync(stockLockPath)) {
+      fs.unlinkSync(stockLockPath);
+    }
+    
+    res.json({ 
+      success: true,
+      message: 'Stock Check fermato. Progresso salvato.' 
+    });
   });
 });
 
@@ -367,6 +566,8 @@ function getStats() {
     logs: 'Caricamento...',
     checkpoint: null,
     stockProgress: null,
+    scraperLock: null,
+    stockCheckerLock: null,
     uptime: formatUptime(process.uptime()),
     memory: getMemoryStats(),
     cpu: getCPULoad(),
@@ -392,21 +593,17 @@ function getStats() {
             const csvContent = fs.readFileSync(filePath, 'utf8');
             const lines = csvContent.split('\n').filter(l => l.trim());
             
-            // Conta prodotti totali
             stats.totalProducts = Math.max(stats.totalProducts, lines.length - 1);
             stats.csvSize = (fileStats.size / 1024 / 1024).toFixed(2);
             
-            // Conta in stock vs out of stock
-            // ✅ USA parseCSVLine per header
             const headers = parseCSVLine(lines[0]).map(h => 
-              h.toLowerCase().replace(/[\s_]+/g, '')  // Rimuovi spazi E underscore
+              h.toLowerCase().replace(/[\s_]+/g, '')
             );
             
             const stockStatusIndex = headers.findIndex(h => h.includes('stockstatus'));
             const stockQtyIndex = headers.findIndex(h => h.includes('stockquantity'));
             
             for (let i = 1; i < lines.length; i++) {
-              // ✅ v2.1: Usa parseCSVLine invece di split per gestire virgole nei campi
               const cols = parseCSVLine(lines[i]);
               const stockStatus = cols[stockStatusIndex]?.toLowerCase() || '';
               const stockQty = parseInt(cols[stockQtyIndex]) || 0;
@@ -418,7 +615,6 @@ function getStats() {
               }
             }
             
-            // Calcola percentuali
             if (stats.totalProducts > 0) {
               stats.inStockPercent = Math.round((stats.inStock / stats.totalProducts) * 100);
               stats.outOfStockPercent = Math.round((stats.outOfStock / stats.totalProducts) * 100);
@@ -448,16 +644,28 @@ function getStats() {
         stats.imagesSize = (totalSize / 1024 / 1024).toFixed(1);
       }
       
-      // Checkpoint
+      // Scraper checkpoint
       const checkpointPath = path.join(outputDir, 'scraper_checkpoint.json');
       if (fs.existsSync(checkpointPath)) {
         stats.checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
+      }
+      
+      // Scraper lock
+      const scraperLockPath = path.join(outputDir, 'scraper.lock');
+      if (fs.existsSync(scraperLockPath)) {
+        stats.scraperLock = JSON.parse(fs.readFileSync(scraperLockPath, 'utf8'));
       }
       
       // Stock checker progress
       const stockProgressPath = path.join(outputDir, 'stock_checker_progress.json');
       if (fs.existsSync(stockProgressPath)) {
         stats.stockProgress = JSON.parse(fs.readFileSync(stockProgressPath, 'utf8'));
+      }
+      
+      // Stock checker lock
+      const stockLockPath = path.join(outputDir, 'stock_checker.lock');
+      if (fs.existsSync(stockLockPath)) {
+        stats.stockCheckerLock = JSON.parse(fs.readFileSync(stockLockPath, 'utf8'));
       }
       
       // Logs
@@ -545,7 +753,7 @@ function getDiskStats() {
 
 // Avvia server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Server avviato su porta ${PORT}`);
+  console.log(`✅ Server v2.4 avviato su porta ${PORT}`);
   console.log(`📊 Dashboard: http://localhost:${PORT}`);
   console.log(`📁 Output directory: ${outputDir}`);
   
@@ -556,6 +764,14 @@ app.listen(PORT, '0.0.0.0', () => {
   // ✅ Full scan SOLO mezzanotte - LENTO per accuratezza
   cron.schedule('0 0 * * *', () => {
     console.log('[CRON] Full scan notturno LENTO - 200 pagine ~4h (tutti i dati)');
+    
+    // Verifica lock prima di lanciare
+    const scraperLockPath = path.join(outputDir, 'scraper.lock');
+    if (fs.existsSync(scraperLockPath)) {
+      console.log('[CRON] ⚠️ Full scan già in corso, skip');
+      return;
+    }
+    
     spawn('node', ['scraper_componenti_wpai_min.js', '200'], {
       detached: true,
       stdio: 'ignore'
@@ -565,6 +781,14 @@ app.listen(PORT, '0.0.0.0', () => {
   // ✅ Stock check ogni 2h dalle 6 alle 22 - VELOCE
   cron.schedule('0 6,8,10,12,14,16,18,20,22 * * *', () => {
     console.log('[CRON] Stock check VELOCE - 5000 prodotti ~1.5h (solo stock/quantity)');
+    
+    // Verifica lock prima di lanciare
+    const stockLockPath = path.join(outputDir, 'stock_checker.lock');
+    if (fs.existsSync(stockLockPath)) {
+      console.log('[CRON] ⚠️ Stock check già in corso, skip questo turno');
+      return;
+    }
+    
     spawn('node', ['stock-checker-light.js', '5000'], {
       detached: true,
       stdio: 'ignore'
@@ -575,14 +799,15 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log('   ✅ Full scan: SOLO 00:00 UTC - LENTO (4h) per massima accuratezza');
   console.log('   ✅ Stock check: 6,8,10,12,14,16,18,20,22 UTC - VELOCE (1.5h) solo stock');
   console.log('   ✅ 9 check/giorno × 5000 = 45.000 verifiche stock');
-  console.log('   ✅ Zero accavallamenti');
+  console.log('   ✅ Sistema LOCK anti-sovrapposizione attivo');
   }
   
   if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
-    console.log('\n⚡ SISTEMA FINALE v2.3:');
+    console.log('\n⚡ SISTEMA FINALE v2.4:');
     console.log('• Full scan notturno 00:00 UTC: LENTO 4h (tutti i dati)');
     console.log('• Stock check 6-22 ogni 2h: VELOCE 1.5h (solo stock)');
     console.log('• 45.000 verifiche stock/giorno');
     console.log('• Checkpoint anti-crash attivo');
+    console.log('• Sistema LOCK per evitare sovrapposizioni');
   }
 });
