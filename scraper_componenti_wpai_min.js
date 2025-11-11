@@ -1,6 +1,5 @@
-// scraper_componenti_wpai_min.js
-// Versione finale ottimizzata - Mantiene struttura CSV esistente ma migliora estrazione dati
-// Recupera: prezzo finale corretto, stock reali, compatibilità, colore, brand migliorato
+// scraper_componenti_wpai_min.js v2.4
+// Versione finale ottimizzata con sistema di LOCK
 
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -21,6 +20,7 @@ class ScraperWPAIFinal {
     this.csvTmpPath   = path.join(this.outputDir, 'prodotti_latest.tmp.csv');
     this.logPath      = path.join(this.outputDir, 'scraper.log');
     this.checkpointPath = path.join(this.outputDir, 'scraper_checkpoint.json');
+    this.lockPath = path.join(this.outputDir, 'scraper.lock'); // 🆕 LOCK
 
     this.imagesHostBaseUrl = process.env.IMAGES_BASE_URL || '';
     
@@ -67,6 +67,50 @@ class ScraperWPAIFinal {
     try { fs.appendFileSync(this.logPath, line + '\n'); } catch (_) {}
   }
 
+  // 🆕 SISTEMA DI LOCK
+  async acquireLock() {
+    try {
+      if (fs.existsSync(this.lockPath)) {
+        const lockData = JSON.parse(fs.readFileSync(this.lockPath, 'utf8'));
+        const lockAge = Date.now() - lockData.timestamp;
+        
+        // Lock stale dopo 4 ore
+        if (lockAge > 14400000) {
+          this.log('⚠️ Lock file stale (>4h), lo rimuovo');
+          fs.unlinkSync(this.lockPath);
+        } else {
+          this.log('❌ Altro scraper in corso, uscita');
+          this.log(`Lock da PID ${lockData.pid} alle ${new Date(lockData.timestamp).toLocaleString()}`);
+          return false;
+        }
+      }
+      
+      const lockData = {
+        pid: process.pid,
+        timestamp: Date.now(),
+        startedAt: new Date().toISOString()
+      };
+      
+      fs.writeFileSync(this.lockPath, JSON.stringify(lockData, null, 2));
+      this.log(`✅ Lock acquisito (PID ${process.pid})`);
+      return true;
+    } catch (e) {
+      this.log(`Errore lock: ${e.message}`);
+      return false;
+    }
+  }
+
+  async releaseLock() {
+    try {
+      if (fs.existsSync(this.lockPath)) {
+        fs.unlinkSync(this.lockPath);
+        this.log('✅ Lock rilasciato');
+      }
+    } catch (e) {
+      this.log(`Errore rilascio lock: ${e.message}`);
+    }
+  }
+
   async saveCheckpoint(currentPage) {
     try {
       const checkpoint = {
@@ -79,7 +123,7 @@ class ScraperWPAIFinal {
       await fsp.writeFile(this.checkpointPath, JSON.stringify(checkpoint, null, 2));
       this.log(`✓ Checkpoint salvato: pagina ${currentPage}, ${this.products.length} prodotti`);
     } catch (e) {
-      this.log(`Errore salvataggio checkpoint: ${e.message}`);
+      this.log(`Errore checkpoint: ${e.message}`);
     }
   }
 
@@ -91,10 +135,10 @@ class ScraperWPAIFinal {
         
         const hoursOld = (Date.now() - checkpoint.timestamp) / (1000 * 60 * 60);
         if (hoursOld < 24) {
-          this.log(`📂 Checkpoint trovato: resume da pagina ${checkpoint.currentPage}`);
+          this.log(`📂 Resume da pagina ${checkpoint.currentPage}`);
           return checkpoint;
         } else {
-          this.log(`Checkpoint troppo vecchio (${hoursOld.toFixed(1)}h), ignoro`);
+          this.log(`Checkpoint vecchio (${hoursOld.toFixed(1)}h), ignoro`);
           await fsp.unlink(this.checkpointPath);
         }
       }
@@ -108,7 +152,7 @@ class ScraperWPAIFinal {
     try {
       if (fs.existsSync(this.checkpointPath)) {
         await fsp.unlink(this.checkpointPath);
-        this.log('✓ Checkpoint eliminato (completato con successo)');
+        this.log('✓ Checkpoint eliminato');
       }
     } catch (e) {
       this.log(`Errore eliminazione checkpoint: ${e.message}`);
@@ -476,7 +520,7 @@ class ScraperWPAIFinal {
     
     if (checkpoint) {
       startPage = checkpoint.currentPage + 1;
-      this.log(`🔄 Resume da pagina ${startPage} (checkpoint recuperato)`);
+      this.log(`🔄 Resume da pagina ${startPage}`);
     }
 
     const browser = await chromium.launch({
@@ -506,12 +550,12 @@ class ScraperWPAIFinal {
           ? startUrl.replace(/pg=\d+/, `pg=${startPage}`)
           : `${startUrl}&pg=${startPage}`;
         n = startPage - 1;
-        this.log(`Navigazione diretta a pagina ${startPage}`);
+        this.log(`Navigazione a pagina ${startPage}`);
       }
       
       while (url && n < maxPages) {
         if (this.isShuttingDown) {
-          this.log('⚠️ Shutdown richiesto, salvataggio in corso...');
+          this.log('⚠️ Shutdown richiesto');
           break;
         }
 
@@ -523,19 +567,19 @@ class ScraperWPAIFinal {
         if (n % this.saveProgressEvery === 0) {
           await this.saveCSV();
           await this.saveCheckpoint(n);
-          this.log(`💾 Progress salvato: ${this.products.length} prodotti fino a pagina ${n}`);
+          this.log(`💾 Progress: ${this.products.length} prodotti, pagina ${n}`);
         }
         
         if (next && next !== url) {
           url = next;
           await page.waitForTimeout(30000 + Math.random() * 30000);
         } else {
-          this.log('Fine paginazione o limite raggiunto');
+          this.log('Fine paginazione');
           break;
         }
       }
 
-      this.log(`COMPLETATO: ${n} pagine, ${this.products.length} prodotti unici`);
+      this.log(`COMPLETATO: ${n} pagine, ${this.products.length} prodotti`);
     } finally {
       await browser.close();
     }
@@ -564,60 +608,72 @@ class ScraperWPAIFinal {
     const withColor = this.products.filter(p => p['attribute:pa_colore']).length;
     const withRealStock = this.products.filter(p => p.stock_quantity > 0 && p.stock_quantity !== 10).length;
     
-    this.log(`Statistiche: ${withNames} con nome, ${withPrices} con prezzo, ${withBrands} con brand`);
-    this.log(`Attributi: ${withCompat} con compatibilità, ${withColor} con colore, ${withRealStock} con stock preciso`);
+    this.log(`Stats: ${withNames} nomi, ${withPrices} prezzi, ${withBrands} brand`);
+    this.log(`Attributi: ${withCompat} compatibilità, ${withColor} colore, ${withRealStock} stock preciso`);
   }
 
   async run(maxPages = 20) {
-    const gracefulShutdown = async (signal) => {
-      if (this.isShuttingDown) return;
-      this.isShuttingDown = true;
-      
-      this.log(`\n⚠️ ${signal} ricevuto! Salvataggio graceful in corso...`);
-      
-      try {
-        if (this.products.length > 0) {
-          await this.saveCSV();
-          this.log('✅ CSV salvato prima dello shutdown');
-        }
-        
-        this.log('✅ Checkpoint mantenuto per resume');
-        this.log('✅ Graceful shutdown completato');
-        
-        process.exit(0);
-      } catch (err) {
-        this.log(`❌ Errore durante shutdown: ${err.message}`);
-        process.exit(1);
-      }
-    };
-    
-    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-    
-    const startUrl = `${this.baseUrl}/default.asp?cmdString=iphone&cmd=searchProd&bFormSearch=1`;
+    // 🆕 Acquisisci lock
+    if (!await this.acquireLock()) {
+      this.log('❌ Scraper già in corso, uscita');
+      return;
+    }
     
     try {
+      const gracefulShutdown = async (signal) => {
+        if (this.isShuttingDown) return;
+        this.isShuttingDown = true;
+        
+        this.log(`\n⚠️ ${signal} ricevuto`);
+        
+        try {
+          if (this.products.length > 0) {
+            await this.saveCSV();
+            this.log('✅ CSV salvato');
+          }
+          
+          this.log('✅ Checkpoint mantenuto');
+          await this.releaseLock(); // 🆕 Rilascia lock
+          this.log('✅ Graceful shutdown');
+          
+          process.exit(0);
+        } catch (err) {
+          this.log(`❌ Errore shutdown: ${err.message}`);
+          await this.releaseLock(); // 🆕 Rilascia lock anche su errore
+          process.exit(1);
+        }
+      };
+      
+      process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+      process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+      
+      const startUrl = `${this.baseUrl}/default.asp?cmdString=iphone&cmd=searchProd&bFormSearch=1`;
+      
       await this.scrapeAll(startUrl, maxPages);
       await this.saveCSV();
       await this.clearCheckpoint();
-      this.log('✅ Scraping completato con successo');
+      this.log('✅ Completato');
+      
     } catch (err) {
-      this.log(`❌ ERRORE FATALE: ${err.message}`);
+      this.log(`❌ ERRORE: ${err.message}`);
       this.log(`Stack: ${err.stack}`);
       
       if (this.products.length > 0) {
-        this.log('⚠️ Tentativo salvataggio prodotti parziali...');
+        this.log('⚠️ Salvataggio parziale');
         await this.saveCSV();
         this.log('✅ CSV parziale salvato');
       }
       
       throw err;
+    } finally {
+      // 🆕 Rilascia sempre lock
+      await this.releaseLock();
     }
   }
 }
 
 const maxPages = process.argv[2] ? parseInt(process.argv[2]) : 20;
 new ScraperWPAIFinal().run(maxPages).catch(err => {
-  console.error('[SCRAPER FATAL]:', err);
+  console.error('[FATAL]:', err);
   process.exit(1);
 });
