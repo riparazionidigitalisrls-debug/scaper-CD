@@ -1,6 +1,5 @@
-  // scraper_componenti_wpai_min.js
-// Versione finale ottimizzata - Mantiene struttura CSV esistente ma migliora estrazione dati
-// Recupera: prezzo finale corretto, stock reali, compatibilità, colore, brand migliorato
+// scraper_componenti_wpai_min.js - VERSIONE FINALE V3
+// Fix: virgole rimosse, tags con spazi, /data disk, logs completi
 
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -9,23 +8,28 @@ const path = require('path');
 const https = require('https');
 const createCsvWriter = require('csv-writer').createObjectCsvWriter;
 
-class ScraperWPAIFinal {
+class ScraperWPAIMin {
   constructor() {
     this.baseUrl = 'https://www.componentidigitali.com';
 
+    // DISK PERSISTENTE: sempre /data su Render
     const dataDir = process.env.DATA_DIR || (process.env.RENDER ? '/data' : './data');
     this.outputDir = path.join(dataDir, 'output');
     this.imagesDir = path.join(this.outputDir, 'images');
+    this.logsDir = path.join(dataDir, 'logs');
 
+    // CSV paths
     this.csvFinalPath = path.join(this.outputDir, 'prodotti_latest.csv');
-    this.csvTmpPath   = path.join(this.outputDir, 'prodotti_latest.tmp.csv');
-    this.logPath      = path.join(this.outputDir, 'scraper.log');
+    this.csvTmpPath = path.join(this.outputDir, 'prodotti_latest.tmp.csv');
+    this.logPath = path.join(this.logsDir, 'scraper.log');
+    this.eventsPath = path.join(this.logsDir, 'scraper_events.json');
 
-    this.imagesHostBaseUrl = process.env.IMAGES_BASE_URL || '';
+    // Base URL per immagini
+    this.imagesHostBaseUrl = process.env.IMAGES_BASE_URL || 'https://scaper-cd.onrender.com';
 
     this.ensureDirs();
     
-    // Manteniamo l'intestazione CSV esistente per compatibilità
+    // CSV Writer con NOMI COLONNE IDENTICI
     this.csvWriter = createCsvWriter({
       path: this.csvTmpPath,
       encoding: 'utf8',
@@ -43,25 +47,78 @@ class ScraperWPAIFinal {
         { id: 'brand', title: 'Brand' },
         { id: 'quality', title: 'Quality' },
         { id: 'packaging', title: 'Packaging' },
-        { id: 'attribute:pa_colore', title: 'Attribute:Color' },
-        { id: 'attribute:pa_modello', title: 'Attribute:Model' },
-        { id: 'attribute:pa_compatibilita', title: 'Attribute:Compatibility' }
+        { id: 'attribute_color', title: 'Attribute:Color' },
+        { id: 'attribute_model', title: 'Attribute:Model' },
+        { id: 'attribute_compatibility', title: 'Attribute:Compatibility' }
       ]
     });
 
     this.products = [];
     this.seen = new Set();
+    this.stats = {
+      startTime: Date.now(),
+      currentPage: 0,
+      maxPages: 0,
+      productsCount: 0,
+      imagesDownloaded: 0,
+      errors: 0
+    };
   }
 
   ensureDirs() {
-    if (!fs.existsSync(this.outputDir)) fs.mkdirSync(this.outputDir, { recursive: true });
-    if (!fs.existsSync(this.imagesDir)) fs.mkdirSync(this.imagesDir, { recursive: true });
+    [this.outputDir, this.imagesDir, this.logsDir].forEach(dir => {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+    });
   }
 
-  log(m) {
-    const line = `[${new Date().toISOString()}] ${m}`;
+  log(message, level = 'INFO', page = null) {
+    const timestamp = new Date().toISOString();
+    const pageInfo = page !== null ? ` (Page: ${page})` : '';
+    const line = `[${timestamp}] [${level}] ${message}${pageInfo}`;
+    
     console.log(line);
-    try { fs.appendFileSync(this.logPath, line + '\n'); } catch (_) {}
+    
+    try {
+      fs.appendFileSync(this.logPath, line + '\n');
+      
+      // Eventi per dashboard
+      const event = {
+        timestamp,
+        level,
+        message,
+        page,
+        stats: this.stats
+      };
+      
+      let events = [];
+      if (fs.existsSync(this.eventsPath)) {
+        try {
+          events = JSON.parse(fs.readFileSync(this.eventsPath, 'utf8') || '[]');
+        } catch (e) {
+          events = [];
+        }
+      }
+      
+      events.unshift(event);
+      events = events.slice(0, 100); // Mantieni ultimi 100
+      fs.writeFileSync(this.eventsPath, JSON.stringify(events, null, 2));
+    } catch (e) {
+      console.error('Log error:', e.message);
+    }
+  }
+
+  // CRITICAL: cleanText RIMUOVE VIRGOLE
+  cleanText(text) {
+    if (!text) return '';
+    return text
+      .replace(/[\r\n\t]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/['"]/g, '')
+      .replace(/,/g, ' ')  // ← VIRGOLE → SPAZI
+      .substring(0, 200);
   }
 
   getImageFilename(sku) {
@@ -76,7 +133,12 @@ class ScraperWPAIFinal {
     const id = m[1];
     const prefixMatch = imageUrl.match(/^(https?:\/\/[^\/]+)?(.*\/)[^\/]+\.JPG$/i);
     const prefix = prefixMatch ? prefixMatch[2] : '';
-    return [prefix + id + '_3.JPG', prefix + id + '_2.JPG', prefix + id + '_1.JPG', prefix + id + '.JPG'];
+    return [
+      prefix + id + '_3.JPG',
+      prefix + id + '_2.JPG', 
+      prefix + id + '_1.JPG',
+      prefix + id + '.JPG'
+    ];
   }
 
   async downloadImage(url, filename) {
@@ -84,8 +146,10 @@ class ScraperWPAIFinal {
       if (!url) return resolve(false);
       const filepath = path.join(this.imagesDir, filename);
       if (fs.existsSync(filepath)) return resolve(true);
+      
       const full = url.startsWith('http') ? url : `${this.baseUrl}/${url.replace(/^\/+/, '')}`;
       const file = fs.createWriteStream(filepath);
+      
       https.get(full, (res) => {
         if (res.statusCode === 200) {
           res.pipe(file);
@@ -117,24 +181,17 @@ class ScraperWPAIFinal {
 
   async downloadImageCandidates(imageUrl, filename) {
     for (const c of this.buildImageCandidates(imageUrl)) {
-      if (await this.downloadImage(c, filename)) return true;
+      if (await this.downloadImage(c, filename)) {
+        this.stats.imagesDownloaded++;
+        return true;
+      }
     }
     return false;
   }
 
-  cleanText(text) {
-    if (!text) return '';
-    return text
-      .replace(/[\r\n\t]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .replace(/['"]/g, '')
-      .replace(/,/g, ' ')  // ← RIMUOVE VIRGOLE CHE ROMPONO CSV
-      .substring(0, 200);
-  }
-
   async scrapePage(page, url) {
-    this.log(`Scraping: ${url}`);
+    this.log(`🔍 Scraping: ${url}`, 'INFO', this.stats.currentPage);
+    
     try {
       await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
       await page.waitForTimeout(800);
@@ -148,7 +205,7 @@ class ScraperWPAIFinal {
         nodes.forEach((el, i) => {
           const txt = el.textContent || '';
           
-          // === ESTRAZIONE NOME (invariata dalla versione originale) ===
+          // Name extraction
           let name = 'Prodotto';
           const productLink = el.querySelector('a[href*=".asp"]');
           if (productLink) {
@@ -163,198 +220,77 @@ class ScraperWPAIFinal {
           
           if (name === 'Prodotto') {
             const heading = el.querySelector('h2, h3, h4, .product-title, .prod-title, .nome-prodotto');
-            if (heading) {
-              const headingText = heading.textContent.trim();
-              if (headingText && headingText.length > 3) {
-                name = headingText;
-              }
-            }
+            if (heading) name = heading.textContent.trim();
           }
           
-          if (name === 'Prodotto') {
-            const titleEl = el.querySelector('[class*="title"], [class*="nome"], [class*="name"], .descrizione');
-            if (titleEl) {
-              const titleText = titleEl.textContent.trim();
-              if (titleText && titleText.length > 3 && !titleText.match(/^(cod|sku|art)/i)) {
-                name = titleText;
-              }
-            }
-          }
-          
-          if (name === 'Prodotto') {
-            const descMatch = txt.match(/(?:descrizione|prodotto|articolo)[:.]?\s*([^€\n]{10,100})/i);
-            if (descMatch) {
-              name = descMatch[1].trim();
-            }
-          }
-          
-          if (name === 'Prodotto') {
-            const img = el.querySelector('img[alt]');
-            if (img && img.alt && img.alt.length > 3) {
-              name = img.alt.trim();
-            }
-          }
-
-          // === ESTRAZIONE SKU (invariata) ===
+          // SKU
           let sku = '';
           const skuMatch = txt.match(/(?:cod\.?\s*art\.?|sku|codice)[:.]?\s*([A-Z0-9\-_]+)/i);
           if (skuMatch) {
             sku = skuMatch[1].trim();
           } else {
-            const skuEl = el.querySelector('[data-sku], [data-code], .sku, .codice');
-            if (skuEl) {
-              sku = skuEl.getAttribute('data-sku') ||
-                    skuEl.getAttribute('data-code') ||
-                    skuEl.textContent.trim();
-            }
-          }
-          if (!sku) {
             sku = `AUTO_${Date.now()}_${i}`;
           }
 
-          // === ESTRAZIONE PREZZO MIGLIORATA ===
+          // Price
           let price = '';
-          let originalPrice = '';
-          
-          // Pattern 1: Cerca esplicitamente "€ XX,XX Sconto Y % € ZZ,ZZ"
-          const discountPattern = txt.match(/€\s*(\d+(?:[,.]\d{1,2})?)\s*[Ss]conto\s*\d+\s*%\s*€\s*(\d+(?:[,.]\d{1,2})?)/);
-          
-          if (discountPattern) {
-            // Prezzo originale barrato e prezzo scontato
-            originalPrice = discountPattern[1].replace(',', '.');
-            price = discountPattern[2].replace(',', '.'); // Prezzo finale scontato
-          } else {
-            // Pattern 2: Estrai TUTTI i prezzi e usa l'ULTIMO (quello finale IVA inclusa)
-            const priceRegex = /€\s*(\d+(?:[,.]\d{1,2})?)/g;
-            const pricesFound = [];
-            let match;
-            while ((match = priceRegex.exec(txt)) !== null) {
-              if (match[1]) pricesFound.push(match[1].replace(',', '.'));
-            }
-            
-            if (pricesFound.length > 0) {
-              // L'ultimo prezzo è tipicamente quello finale IVA inclusa
-              price = pricesFound[pricesFound.length - 1];
-              
-              // Se ci sono 2+ prezzi e il primo è maggiore, probabilmente c'è uno sconto
-              if (pricesFound.length >= 2) {
-                const firstPrice = parseFloat(pricesFound[0]);
-                const lastPrice = parseFloat(price);
-                if (firstPrice > lastPrice) {
-                  originalPrice = pricesFound[0];
-                }
-              }
-            } else {
-              // Fallback su altri pattern
-              const altMatch = txt.match(/EUR\s*(\d+(?:[,.]\d{1,2})?)/i) ||
-                              txt.match(/prezzo[:.]?\s*(\d+(?:[,.]\d{1,2})?)/i);
-              if (altMatch) {
-                price = altMatch[1].replace(',', '.');
-              }
+          const priceMatches = [
+            txt.match(/€\s*(\d+(?:[,.]\d{1,2})?)/),
+            txt.match(/(\d+(?:[,.]\d{1,2})?)\s*€/),
+            txt.match(/EUR\s*(\d+(?:[,.]\d{1,2})?)/i)
+          ];
+          for (const match of priceMatches) {
+            if (match) {
+              price = match[1].replace(',', '.');
+              break;
             }
           }
 
-          // === ESTRAZIONE STOCK MIGLIORATA ===
+          // Stock
           let stockQty = 1;
-          
-          // Prima cerca il pattern specifico "Disponibile (X PZ)"
-          const qtyParens = txt.match(/[Dd]isponibile\s*\(\s*(\d+)\s*PZ\s*\)/i);
-          if (qtyParens) {
-            stockQty = parseInt(qtyParens[1]);
-          } else if (/non\s+disponibile|esaurito|sold\s*out/i.test(txt)) {
+          if (/non\s+disponibile|esaurito|sold\s*out/i.test(txt)) {
             stockQty = 0;
           } else if (/disponibile|available|in\s*stock/i.test(txt)) {
-            // Se dice solo "Disponibile" senza quantità, usa un valore prudente
-            stockQty = 10; // Più realistico di 999
+            stockQty = 999;
           } else {
-            const qtyMatch = txt.match(/(?:pezzi|pz|qty|quantità)[:.]?\s*(\d+)/i);
-            if (qtyMatch) {
-              stockQty = parseInt(qtyMatch[1]);
-            }
+            const qtyMatch = txt.match(/(?:pezzi|qty|quantità)[:.]?\s*(\d+)/i);
+            if (qtyMatch) stockQty = parseInt(qtyMatch[1]);
           }
 
-          // === ESTRAZIONE IMMAGINE (invariata) ===
-          const img = el.querySelector('img[src*="Foto"], img[src*="foto"], img[src*=".jpg"], img[src*=".JPG"], img[src*=".png"]');
+          // Image
+          const img = el.querySelector('img[src*="Foto"], img[src*="foto"], img[src*=".jpg"], img[src*=".JPG"]');
           const imageUrl = img ? (img.src || img.getAttribute('src')) : '';
 
-          // === ESTRAZIONE BRAND MIGLIORATA ===
+          // Brand
           let brand = '';
-          const brandMatch = txt.match(/(?:marca|brand|marchio|produttore)[:.]?\s*([A-Z][A-Za-z0-9\s&\-]+)/i);
-          if (brandMatch) {
-            brand = brandMatch[1].trim().split(/[\n\r€]/)[0].trim();
-          }
-          
-          // Cerca marche note se non trova brand generico
-          if (!brand) {
-            const knownBrands = ['Apple', 'Samsung', 'Huawei', 'Xiaomi', 'LG', 'Sony', 'Nokia', 
-                                'Motorola', 'Oppo', 'OnePlus', 'Google', 'Asus', 'Honor'];
-            for (const b of knownBrands) {
-              const brandRegex = new RegExp(`\\b${b}\\b`, 'i');
-              if (brandRegex.test(txt)) {
-                brand = b;
-                break;
-              }
-            }
-          }
+          const brandMatch = txt.match(/(?:marca|brand|marchio)[:.]?\s*([A-Z][A-Za-z0-9\s&\-]+)/i);
+          if (brandMatch) brand = brandMatch[1].trim().split(/[\n\r]/)[0];
 
-          // === ESTRAZIONE QUALITY ===
+          // Quality
           let quality = '';
           const qualityMatch = txt.match(/(?:qualità|quality)[:.]?\s*(\w+)/i);
           if (qualityMatch) quality = qualityMatch[1].trim();
 
-          // === ESTRAZIONE PACKAGING ===
+          // Packaging
           let packaging = '';
-          const packMatch = txt.match(/(?:confezione|packaging|package|conf\.)[:.]?\s*([^\n\r€]{3,50})/i);
-          if (packMatch) {
-            packaging = packMatch[1].trim();
-          }
+          const packMatch = txt.match(/(?:confezione|packaging|package)[:.]?\s*([^\n\r€]{3,50})/i);
+          if (packMatch) packaging = packMatch[1].trim();
 
-          // === ESTRAZIONE COMPATIBILITÀ ===
+          // Compatibility
           let compatibility = '';
-          // Pattern per iPhone, Samsung, etc.
-          const compatMatch = txt.match(/(?:compatibil[eità]+|[Pp]er|[Ff]or)[:.]?\s*(iPhone\s+[^\s,€\n]+|Samsung\s+[^\s,€\n]+|Huawei\s+[^\s,€\n]+|Xiaomi\s+[^\s,€\n]+)/i);
-          if (compatMatch) {
-            compatibility = compatMatch[1].trim();
-          } else {
-            // Cerca modelli specifici
-            const modelMatch = txt.match(/\b(iPhone\s+\d+[^\s,]*|Galaxy\s+[A-Z]\d+|Mi\s+\d+|P\d+\s+Pro)\b/i);
-            if (modelMatch) {
-              compatibility = modelMatch[1].trim();
-            }
-          }
+          const compatMatch = txt.match(/(?:compatibile|compatibility)[:.]?\s*([^\n\r€]{3,100})/i);
+          if (compatMatch) compatibility = compatMatch[1].trim();
 
-          // === ESTRAZIONE COLORE ===
-          let color = '';
-          const colorMatch = txt.match(/(?:colore|color|colour)[:.]?\s*([A-Za-z]+|nero|bianco|rosso|blu|verde|giallo|grigio|oro|argento)/i);
-          if (colorMatch) {
-            color = colorMatch[1].trim();
-          }
-
-          // === PULIZIA NOME FINALE ===
-          if (name.includes(sku) && name.length > sku.length + 5) {
-            name = name.replace(sku, '').trim();
-          }
-          name = name.replace(/€\s*\d+[,.]?\d*/, '').trim();
-          name = name.replace(/[^\w\s\-\(\)\/&.,àèéìòù]/gi, ' ').replace(/\s+/g, ' ').trim();
-          
-          if (name === 'Prodotto' || name.length < 5) {
-            const typeMatch = txt.match(/(?:display|lcd|batteria|battery|cover|cable|cavo|vetro|glass|flex)/i);
-            name = typeMatch ? `${typeMatch[0]} ${sku}` : `Componente ${sku}`;
-          }
-
-          // === OUTPUT CON DATI MIGLIORATI ===
           out.push({
             sku: sku.substring(0, 50),
             name: name.substring(0, 200),
-            regular_price: price, // Prezzo finale (eventualmente scontato)
-            original_price: originalPrice, // Prezzo originale se c'è sconto
+            regular_price: price,
             stock_quantity: stockQty,
             image_url: imageUrl,
             brand: brand.substring(0, 50),
             quality: quality.substring(0, 30),
             packaging: packaging.substring(0, 100),
-            compatibility: compatibility.substring(0, 100),
-            color: color.substring(0, 30)
+            compatibility: compatibility.substring(0, 100)
           });
         });
         
@@ -362,7 +298,9 @@ class ScraperWPAIFinal {
       });
 
       if (items.length > 0) {
-        this.log(`Trovati ${items.length} prodotti. Esempio: SKU=${items[0].sku}, Name="${items[0].name}", Price=${items[0].regular_price}`);
+        this.log(`✓ Trovati ${items.length} prodotti`, 'INFO', this.stats.currentPage);
+      } else {
+        this.log(`⚠️ Nessun prodotto trovato`, 'WARN', this.stats.currentPage);
       }
 
       for (const p of items) {
@@ -371,32 +309,31 @@ class ScraperWPAIFinal {
 
         const filename = this.getImageFilename(p.sku);
         let imagesField = '';
+        
         if (p.image_url) {
           const ok = await this.downloadImageCandidates(p.image_url, filename);
           if (ok) {
-            imagesField = this.imagesHostBaseUrl
-              ? (this.imagesHostBaseUrl.replace(/\/+$/, '') + '/' + filename)
-              : `images/${filename}`;
+            imagesField = `${this.imagesHostBaseUrl}/images/${filename}`;
           }
         }
 
-        // Costruiamo tags intelligenti basati su compatibilità e tipo prodotto
+        // TAGS: SPAZI invece di VIRGOLE!
         let tags = '';
         if (p.compatibility) {
-          tags = `compatible-${p.compatibility.toLowerCase().replace(/\s+/g, '-').replace(/,/g, '-')}`;
+          const compatClean = p.compatibility.toLowerCase()
+            .replace(/\s+/g, '-')
+            .replace(/,/g, '-');  // virgole → trattini
+          tags = `compatible-${compatClean}`;
         }
         if (p.brand) {
-          tags = tags ? `${tags} ${p.brand.toLowerCase().replace(/,/g, '-')}` : p.brand.toLowerCase().replace(/,/g, '-');
+          const brandClean = p.brand.toLowerCase().replace(/,/g, '-');
+          tags = tags ? `${tags} ${brandClean}` : brandClean;  // ← SPAZIO!
         }
 
-        // Short description migliorata
+        // Short description
         let shortDesc = p.name;
         if (p.brand) shortDesc += ` - ${p.brand}`;
         if (p.compatibility) shortDesc += ` - Compatibile con ${p.compatibility}`;
-        if (p.original_price && p.regular_price !== p.original_price) {
-          const discount = Math.round((1 - parseFloat(p.regular_price) / parseFloat(p.original_price)) * 100);
-          if (discount > 0) shortDesc += ` - Sconto ${discount}%`;
-        }
 
         this.products.push({
           sku: this.cleanText(p.sku),
@@ -406,18 +343,24 @@ class ScraperWPAIFinal {
           stock_status: p.stock_quantity > 0 ? 'instock' : 'outofstock',
           images: imagesField,
           categories: 'Componenti',
-          tags: tags.substring(0, 100),
-          short_description: shortDesc.substring(0, 150),
+          tags: this.cleanText(tags),
+          short_description: this.cleanText(shortDesc),
           product_type: 'simple',
           brand: this.cleanText(p.brand),
           quality: this.cleanText(p.quality),
           packaging: this.cleanText(p.packaging),
-          'attribute:pa_colore': this.cleanText(p.color),
-          'attribute:pa_modello': '', // Richiede pagina dettaglio
-          'attribute:pa_compatibilita': this.cleanText(p.compatibility)
+          attribute_color: '',
+          attribute_model: '',
+          attribute_compatibility: this.cleanText(p.compatibility)
         });
+        
+        this.stats.productsCount = this.products.length;
       }
 
+      // Save progress
+      this.saveProgress();
+
+      // Next page
       const nextUrl = await page.evaluate(() => {
         const href = window.location.href;
         const m = href.match(/pg=(\d+)/);
@@ -428,6 +371,7 @@ class ScraperWPAIFinal {
           const mm = a.href.match(/pg=(\d+)/);
           return mm && parseInt(mm[1]) === next;
         });
+        
         if (link) return link.href;
         
         if (curr < 200) {
@@ -439,13 +383,33 @@ class ScraperWPAIFinal {
       });
 
       return nextUrl;
+      
     } catch (e) {
-      this.log(`Errore scrape: ${e.message}`);
+      this.stats.errors++;
+      this.log(`❌ Errore scrape: ${e.message}`, 'ERROR', this.stats.currentPage);
       return null;
     }
   }
 
+  saveProgress() {
+    const progressPath = path.join(this.outputDir, 'scraper_progress.json');
+    const progress = {
+      currentPage: this.stats.currentPage,
+      productsCount: this.stats.productsCount,
+      stats: this.stats,
+      timestamp: new Date().toISOString()
+    };
+    
+    try {
+      fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2));
+    } catch (e) {
+      this.log(`⚠️ Errore salvataggio progress: ${e.message}`, 'WARN');
+    }
+  }
+
   async scrapeAll(startUrl, maxPages = 20) {
+    this.stats.maxPages = maxPages;
+    
     const browser = await chromium.launch({
       headless: true,
       args: [
@@ -456,32 +420,44 @@ class ScraperWPAIFinal {
         '--single-process'
       ]
     });
+    
     try {
+      const version = await browser.version();
+      this.log(`🚀 Chromium ${version} avviato`, 'SUCCESS');
+      
       const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       });
       const page = await context.newPage();
 
-      const version = await browser.version();
-      this.log(`Chromium ${version} avviato`);
-      
       let url = startUrl;
       let n = 0;
-      
+
       while (url && n < maxPages) {
         n++;
-        this.log(`=== PAGINA ${n}/${maxPages} ===`);
+        this.stats.currentPage = n;
+        this.log(`📄 PAGINA ${n}/${maxPages}`, 'SUCCESS', n);
+        
         const next = await this.scrapePage(page, url);
+        
         if (next && next !== url) {
           url = next;
           await page.waitForTimeout(1000 + Math.random() * 1000);
         } else {
-          this.log('Fine paginazione o limite raggiunto');
+          this.log('🏁 Fine paginazione o limite raggiunto', 'SUCCESS', n);
           break;
+        }
+        
+        // Log progress ogni 10 pagine
+        if (n % 10 === 0) {
+          const duration = Math.round((Date.now() - this.stats.startTime) / 60000);
+          this.log(`💾 Progress: ${this.products.length} prodotti, ${this.stats.imagesDownloaded} immagini, ${duration}min`, 'SUCCESS', n);
         }
       }
 
-      this.log(`COMPLETATO: ${n} pagine, ${this.products.length} prodotti unici`);
+      const duration = Math.round((Date.now() - this.stats.startTime) / 60000);
+      this.log(`✅ COMPLETATO: ${n} pagine, ${this.products.length} prodotti, ${duration}min`, 'SUCCESS', n);
+      
     } finally {
       await browser.close();
     }
@@ -489,31 +465,43 @@ class ScraperWPAIFinal {
 
   async saveCSV() {
     if (this.products.length === 0) {
-      this.log('Nessun prodotto da salvare');
+      this.log('⚠️ Nessun prodotto da salvare', 'WARN');
       return;
     }
-    await this.csvWriter.writeRecords(this.products);
-    
-    // Rename atomico
+
     try {
-      await fsp.rename(this.csvTmpPath, this.csvFinalPath);
-    } catch (err) {
-      await fsp.copyFile(this.csvTmpPath, this.csvFinalPath).catch(() => {});
-      await fsp.unlink(this.csvTmpPath).catch(() => {});
+      // Scrivi CSV temporaneo
+      await this.csvWriter.writeRecords(this.products);
+      
+      // Backup vecchio CSV
+      if (fs.existsSync(this.csvFinalPath)) {
+        const backupPath = path.join(this.outputDir, `prodotti_latest_backup_${Date.now()}.csv`);
+        await fsp.copyFile(this.csvFinalPath, backupPath);
+        this.log(`📦 Backup creato: ${backupPath}`, 'INFO');
+      }
+      
+      // Rename atomico
+      try {
+        await fsp.rename(this.csvTmpPath, this.csvFinalPath);
+      } catch (err) {
+        await fsp.copyFile(this.csvTmpPath, this.csvFinalPath);
+        await fsp.unlink(this.csvTmpPath).catch(() => {});
+      }
+      
+      this.log(`💾 CSV salvato: ${this.csvFinalPath} (${this.products.length} righe)`, 'SUCCESS');
+      
+      // Stats
+      const withNames = this.products.filter(p => p.name && p.name !== 'Prodotto').length;
+      const withPrices = this.products.filter(p => p.regular_price).length;
+      const withBrand = this.products.filter(p => p.brand).length;
+      const withImages = this.products.filter(p => p.images).length;
+      
+      this.log(`📊 Stats: ${withNames} nomi, ${withPrices} prezzi, ${withImages} img, ${withBrand} brand`, 'INFO');
+      
+    } catch (e) {
+      this.log(`❌ Errore salvataggio CSV: ${e.message}`, 'ERROR');
+      throw e;
     }
-    
-    this.log(`CSV salvato: ${this.csvFinalPath} (${this.products.length} righe)`);
-    
-    // Statistiche migliorate
-    const withNames = this.products.filter(p => p.name && p.name !== 'Prodotto').length;
-    const withPrices = this.products.filter(p => p.regular_price).length;
-    const withBrands = this.products.filter(p => p.brand).length;
-    const withCompat = this.products.filter(p => p['attribute:pa_compatibilita']).length;
-    const withColor = this.products.filter(p => p['attribute:pa_colore']).length;
-    const withRealStock = this.products.filter(p => p.stock_quantity > 0 && p.stock_quantity !== 10).length;
-    
-    this.log(`Statistiche: ${withNames} con nome, ${withPrices} con prezzo, ${withBrands} con brand`);
-    this.log(`Attributi: ${withCompat} con compatibilità, ${withColor} con colore, ${withRealStock} con stock preciso`);
   }
 
   async run(maxPages = 20) {
@@ -523,8 +511,9 @@ class ScraperWPAIFinal {
   }
 }
 
+// Main
 const maxPages = process.argv[2] ? parseInt(process.argv[2]) : 20;
-new ScraperWPAIFinal().run(maxPages).catch(err => {
-  console.error('[SCRAPER FATAL]:', err);
+new ScraperWPAIMin().run(maxPages).catch(err => {
+  console.error('[FATAL]:', err);
   process.exit(1);
 });
