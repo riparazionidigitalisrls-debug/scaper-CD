@@ -1,4 +1,4 @@
-// scraper_componenti_wpai_min.js
+  // scraper_componenti_wpai_min.js
 // Versione finale ottimizzata - Mantiene struttura CSV esistente ma migliora estrazione dati
 // Recupera: prezzo finale corretto, stock reali, compatibilità, colore, brand migliorato
 
@@ -129,6 +129,7 @@ class ScraperWPAIFinal {
       .replace(/\s+/g, ' ')
       .trim()
       .replace(/['"]/g, '')
+      .replace(/,/g, ' ')  // ← RIMUOVE VIRGOLE CHE ROMPONO CSV
       .substring(0, 200);
   }
 
