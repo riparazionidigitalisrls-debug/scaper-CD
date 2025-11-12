@@ -348,9 +348,10 @@ app.get('/', (req, res) => {
       <div class="cron-info">
         <strong>${cronEnabled ? '✅' : '❌'} CRON Status: ${cronEnabled ? 'ATTIVO' : 'DISATTIVO'}</strong><br>
         ${cronEnabled ? `
-        🔄 Scraping: Ogni notte alle 02:00<br>
-        📊 Stock check: 4x/giorno alle 07:00, 12:00, 17:00, 22:00
-        ` : 'Abilita ENABLE_CRON=true per scheduling automatico'}
+        🔄 Scraping completo: <strong>Ogni 2 ore</strong> (12x/giorno)<br>
+        📊 Stock sempre aggiornato (max 2h di ritardo)<br>
+        ⏰ Prossimi run: ${Array.from({length: 12}, (_, i) => i*2).map(h => h.toString().padStart(2, '0') + ':00').join(', ')}
+        ` : 'Abilita ENABLE_CRON=true per scheduling automatico ogni 2 ore'}
       </div>
     </div>
 
@@ -557,32 +558,27 @@ app.get('/', (req, res) => {
   `);
 });
 
-// CRON SCHEDULING
+// CRON SCHEDULING - OGNI 2 ORE
 if (process.env.ENABLE_CRON === 'true') {
-  // Scraping completo - 02:00
-  cron.schedule('0 2 * * *', () => {
-    logger.log('[CRON] Starting nightly scraping (200 pages)', 'INFO');
+  // Scraping completo ogni 2 ore (12 volte al giorno)
+  cron.schedule('0 */2 * * *', () => {
+    const hour = new Date().getHours();
+    logger.log(`[CRON] Starting scheduled scraping (${hour}:00)`, 'INFO');
+    
     const child = spawn('node', ['scraper_componenti_wpai_min.js', '200'], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false
     });
+    
     child.stdout.on('data', (data) => logger.log(`[CRON SCRAPER] ${data}`, 'INFO'));
     child.stderr.on('data', (data) => logger.log(`[CRON SCRAPER ERROR] ${data}`, 'ERROR'));
-  });
-  
-  // Stock check - 4x/giorno
-  cron.schedule('0 7,12,17,22 * * *', () => {
-    const hour = new Date().getHours();
-    logger.log(`[CRON] Starting stock check (${hour}:00)`, 'INFO');
-    const child = spawn('node', ['stock-checker-light.js', '5000'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: false
+    
+    child.on('close', (code) => {
+      logger.log(`[CRON] Scraping ${code === 0 ? 'completed' : 'failed'}`, code === 0 ? 'INFO' : 'ERROR');
     });
-    child.stdout.on('data', (data) => logger.log(`[CRON STOCK] ${data}`, 'INFO'));
-    child.stderr.on('data', (data) => logger.log(`[CRON STOCK ERROR] ${data}`, 'ERROR'));
   });
   
-  logger.log('⏰ CRON ENABLED - Scraping: 2AM | Stock: 7,12,17,22', 'INFO');
+  logger.log('⏰ CRON ENABLED - Scraping: Every 2 hours (12x/day)', 'INFO');
 } else {
   logger.log('⏰ CRON DISABLED (set ENABLE_CRON=true)', 'INFO');
 }
