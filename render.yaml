@@ -1,108 +1,30 @@
 services:
   - type: web
-    name: scraper-componenti-digitali
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    dockerContext: ./
-    
-    # Piano STARTER per disco persistente
-    plan: starter
+    name: scaper-cd
+    runtime: node
+    plan: starter  # Upgrade a standard se serve più RAM
     region: frankfurt
-    
-    # DISCO PERSISTENTE - 1GB per CSV, backup e immagini
-    disk:
-      name: scraper-data
-      mountPath: /data
-      sizeGB: 1
-    
-    # Variabili ambiente
+    buildCommand: npm install && npx playwright install chromium
+    startCommand: node server.js
     envVars:
       - key: NODE_ENV
         value: production
-        
       - key: RENDER
-        value: "true"
-        
+        value: true
       - key: PORT
-        value: "10000"
-        
+        value: 10000
       - key: DATA_DIR
         value: /data
-        
-      - key: TZ
-        value: Europe/Rome
-        
-      # CRITICAL: Base URL corretto per le immagini
       - key: IMAGES_BASE_URL
-        sync: false
-        value: https://scraper-componenti-digitali.onrender.com/output/images
-        
-      # Limiti per sicurezza
-      - key: MAX_SCRAPING_TIME
-        value: "14400"  # 4 ore in secondi
-        
-      - key: MAX_STOCK_TIME
-        value: "7200"   # 2 ore in secondi
-        
-      # Configurazione scraper
-      - key: SCRAPER_USER_AGENT
-        value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        
-      - key: CRAWL_DELAY
-        value: "400"    # 400ms tra richieste (sicuro)
-        
-      # Playwright configuration
-      - key: PLAYWRIGHT_BROWSERS_PATH
-        value: /ms-playwright
-        
-      # Node options per memoria
-      - key: NODE_OPTIONS
-        value: --max-old-space-size=512
-        
-      # Notifiche (opzionale - decommenta se necessario)
-      # - key: WEBHOOK_URL
-      #   value: YOUR_WEBHOOK_URL
-      #   sync: false
-      
-    # Build configuration
-    # NON serve buildCommand perché usa Dockerfile
-    
-    # Health check path
+        value: https://scaper-cd.onrender.com
+      - key: ENABLE_CRON
+        value: true
     healthCheckPath: /healthz
     
-    # Auto deploy da GitHub
+    # DISK PERSISTENTE - CRITICO!
+    disk:
+      name: scraper-data
+      mountPath: /data
+      sizeGB: 10  # 10GB per CSV + immagini + logs
+    
     autoDeploy: true
-    
-    # Resource configuration
-    numInstances: 1
-    
-    # Domains personalizzati (opzionale)
-    # customDomains:
-    #   - domain: scraper.tuodominio.com
-    #     path: /
-
-# Note:
-# - Il piano Starter include 0.5 CPU e 512MB RAM
-# - Disco persistente di 1GB per dati, log e backup
-# - CRON jobs gestiti internamente con node-cron
-# - Lock management per prevenire esecuzioni multiple
-# - Timeout automatici per sicurezza
-
-# Limitazioni piano Starter:
-# - No custom domains (usa il dominio .onrender.com)
-# - No scaling automatico (1 istanza fissa)
-# - No cron jobs esterni (usa node-cron interno)
-
-# Per upgrade a Team Plan (per cron jobs Render nativi):
-# cronJobs:
-#   - name: scraping-notturno
-#     command: node scraper_componenti_wpai_min.js 200
-#     schedule: "0 2 * * *"
-#     
-#   - name: stock-check-diurno  
-#     command: node stock-checker-light.js 5000
-#     schedule: "0 7,9,12,14,17,19,22 * * *"
-#     
-#   - name: backup-giornaliero
-#     command: cp /data/output/prodotti_latest.csv /data/backups/backup_$(date +\%Y-\%m-\%d).csv
-#     schedule: "0 5 * * *"
