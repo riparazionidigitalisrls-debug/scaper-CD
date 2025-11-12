@@ -240,30 +240,23 @@ app.get('/', (req, res) => {
       color: #667eea; 
       margin: 10px 0;
     }
-    .metric-label { 
-      color: #666; 
-      font-size: 0.9em;
-    }
+    .metric-label { font-size: 0.9em; color: #718096; }
     .action-section {
       background: white;
       border-radius: 10px;
       padding: 20px;
       margin-bottom: 20px;
-    }
-    .button-group {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin: 15px 0;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
     .btn {
-      padding: 12px 24px;
+      padding: 10px 20px;
       border: none;
-      border-radius: 8px;
+      border-radius: 5px;
       font-size: 16px;
-      font-weight: 600;
       cursor: pointer;
       transition: all 0.3s;
+      text-decoration: none;
+      display: inline-block;
     }
     .btn-primary {
       background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -274,65 +267,61 @@ app.get('/', (req, res) => {
       box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
     }
     .btn-secondary {
-      background: #f7fafc;
-      color: #2d3748;
-      border: 2px solid #e2e8f0;
+      background: #e2e8f0;
+      color: #4a5568;
+    }
+    .btn-secondary:hover {
+      background: #cbd5e0;
+    }
+    .button-group {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
     }
     .event-viewer {
-      background: #1a202c;
-      color: #a0aec0;
+      background: #f7fafc;
+      border-radius: 8px;
       padding: 15px;
-      border-radius: 6px;
-      font-family: 'Courier New', monospace;
-      font-size: 12px;
-      max-height: 500px;
+      max-height: 300px;
       overflow-y: auto;
+      font-family: 'Monaco', 'Consolas', monospace;
+      font-size: 12px;
     }
     .event-item {
-      padding: 8px;
-      margin: 4px 0;
-      border-left: 3px solid #4299e1;
-      background: rgba(255,255,255,0.05);
-      border-radius: 4px;
+      padding: 4px 0;
+      border-bottom: 1px solid #e2e8f0;
     }
-    .event-item.ERROR { border-left-color: #f56565; }
-    .event-item.WARN { border-left-color: #ed8936; }
-    .event-item.SUCCESS { border-left-color: #48bb78; }
-    .event-item.INFO { border-left-color: #4299e1; }
+    .event-item.ERROR { color: #e53e3e; }
+    .event-item.SUCCESS { color: #38a169; }
+    .event-item.WARN { color: #d69e2e; }
     .progress-bar {
-      width: 100%;
-      height: 30px;
-      background: #edf2f7;
-      border-radius: 15px;
+      background: #e2e8f0;
+      border-radius: 10px;
       overflow: hidden;
-      position: relative;
+      height: 30px;
     }
     .progress-fill {
-      height: 100%;
       background: linear-gradient(90deg, #667eea, #764ba2);
-      transition: width 0.5s;
+      height: 100%;
       display: flex;
       align-items: center;
       justify-content: center;
       color: white;
       font-weight: bold;
-      font-size: 14px;
+      transition: width 0.3s ease;
     }
     .badge {
       display: inline-block;
-      padding: 4px 12px;
-      border-radius: 12px;
+      padding: 4px 8px;
+      border-radius: 4px;
       font-size: 12px;
-      font-weight: 600;
+      font-weight: bold;
+      text-transform: uppercase;
       margin-left: 10px;
     }
-    .badge-success { background: #c6f6d5; color: #22543d; }
-    .badge-running { background: #bee3f8; color: #2c5282; animation: pulse 2s infinite; }
     .badge-idle { background: #e2e8f0; color: #4a5568; }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.6; }
-    }
+    .badge-running { background: #48bb78; color: white; }
+    a { color: #667eea; }
   </style>
 </head>
 <body>
@@ -342,16 +331,11 @@ app.get('/', (req, res) => {
         🔧 Scraper Componenti Digitali
         <span class="version">v3.3 FINAL</span>
       </h1>
-      <p style="color: #666; margin-top: 10px;">
-        Dashboard con logging real-time + Disk persistente /data
-      </p>
       <div class="cron-info">
-        <strong>${cronEnabled ? '✅' : '❌'} CRON Status: ${cronEnabled ? 'ATTIVO' : 'DISATTIVO'}</strong><br>
-        ${cronEnabled ? `
-        🔄 Scraping completo: <strong>Ogni 2 ore</strong> (12x/giorno)<br>
-        📊 Stock sempre aggiornato (max 2h di ritardo)<br>
-        ⏰ Prossimi run: ${Array.from({length: 12}, (_, i) => i*2).map(h => h.toString().padStart(2, '0') + ':00').join(', ')}
-        ` : 'Abilita ENABLE_CRON=true per scheduling automatico ogni 2 ore'}
+        ${cronEnabled ? 
+          '⏰ <b>CRON ATTIVO</b>: Scraping automatico ogni 2 ore dalle 7:00 alle 19:00 (7 esecuzioni al giorno)' : 
+          '⚠️ <b>CRON DISATTIVO</b>: Imposta ENABLE_CRON=true per attivare lo scraping automatico'
+        }
       </div>
     </div>
 
@@ -359,12 +343,12 @@ app.get('/', (req, res) => {
       <div class="card">
         <h2>📦 Prodotti Totali</h2>
         <div class="metric">${stats.totalProducts.toLocaleString()}</div>
-        <div class="metric-label">Prodotti catalogati</div>
+        <div class="metric-label">Nel catalogo</div>
       </div>
 
       <div class="card">
-        <h2>🕒 Ultimo Aggiornamento</h2>
-        <div class="metric" style="font-size: 1.5em;">${stats.lastUpdate.time}</div>
+        <h2>⏱️ Ultimo Aggiornamento</h2>
+        <div class="metric">${stats.lastUpdate.time}</div>
         <div class="metric-label">${stats.lastUpdate.ago}</div>
       </div>
 
@@ -558,12 +542,14 @@ app.get('/', (req, res) => {
   `);
 });
 
-// CRON SCHEDULING - OGNI 2 ORE
+// CRON SCHEDULING - MODIFICATO: OGNI 2 ORE DALLE 7:00 ALLE 19:00
 if (process.env.ENABLE_CRON === 'true') {
-  // Scraping completo ogni 2 ore (12 volte al giorno)
-  cron.schedule('0 */2 * * *', () => {
-    const hour = new Date().getHours();
-    logger.log(`[CRON] Starting scheduled scraping (${hour}:00)`, 'INFO');
+  // Scraping alle ore: 7, 9, 11, 13, 15, 17, 19 (7 esecuzioni al giorno)
+  // Sintassi cron: '0 7-19/2 * * *' significa minuto 0, ogni 2 ore dalle 7 alle 19
+  cron.schedule('0 7-19/2 * * *', () => {
+    const now = new Date();
+    const hour = now.getHours();
+    logger.log(`[CRON] Starting scheduled scraping at ${hour}:00`, 'INFO');
     
     const child = spawn('node', ['scraper_componenti_wpai_min.js', '200'], {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -574,13 +560,13 @@ if (process.env.ENABLE_CRON === 'true') {
     child.stderr.on('data', (data) => logger.log(`[CRON SCRAPER ERROR] ${data}`, 'ERROR'));
     
     child.on('close', (code) => {
-      logger.log(`[CRON] Scraping ${code === 0 ? 'completed' : 'failed'}`, code === 0 ? 'INFO' : 'ERROR');
+      logger.log(`[CRON] Scraping ${code === 0 ? 'completed' : 'failed'} at ${hour}:00`, code === 0 ? 'INFO' : 'ERROR');
     });
   });
   
-  logger.log('⏰ CRON ENABLED - Scraping: Every 2 hours (12x/day)', 'INFO');
+  logger.log('⏰ CRON ENABLED - Scraping: 7:00, 9:00, 11:00, 13:00, 15:00, 17:00, 19:00 (7x/day)', 'INFO');
 } else {
-  logger.log('⏰ CRON DISABLED (set ENABLE_CRON=true)', 'INFO');
+  logger.log('⏰ CRON DISABLED (set ENABLE_CRON=true to enable)', 'INFO');
 }
 
 // Graceful shutdown
