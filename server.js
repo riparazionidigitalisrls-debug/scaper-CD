@@ -1,5 +1,5 @@
-// server.js - v3.1 NO LOCK + DASHBOARD AVANZATA
-// Sistema senza lock, con visualizzazione eventi scraper in tempo reale
+// server.js - v3.2 NO LOCK + CRON SCHEDULING
+// Sistema con scheduling automatico scraping + stock check
 
 const express = require('express');
 const fs = require('fs');
@@ -212,7 +212,7 @@ app.get('/', (req, res) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Scraper CD - Dashboard v3.1 DEBUG</title>
+  <title>Scraper CD - Dashboard v3.2 CRON</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { 
@@ -243,6 +243,15 @@ app.get('/', (req, res) => {
       padding: 4px 12px; 
       border-radius: 4px;
       font-weight: normal;
+    }
+    .cron-info {
+      background: #e6fffa;
+      border-left: 4px solid #38b2ac;
+      padding: 12px;
+      margin-top: 15px;
+      border-radius: 4px;
+      font-size: 0.9em;
+      color: #234e52;
     }
     .grid { 
       display: grid; 
@@ -390,11 +399,16 @@ app.get('/', (req, res) => {
     <div class="header">
       <h1>
         🔧 Scraper Componenti Digitali
-        <span class="version">v3.1 NO LOCK + DEBUG</span>
+        <span class="version">v3.2 CRON ENABLED</span>
       </h1>
       <p style="color: #666; margin-top: 10px;">
-        Dashboard con monitoraggio eventi scraper in tempo reale
+        Dashboard con scheduling automatico e monitoraggio real-time
       </p>
+      <div class="cron-info">
+        <strong>⏰ Scheduling Automatico Attivo:</strong><br>
+        🔄 Scraping completo: Ogni notte alle 02:00<br>
+        📊 Stock check: 4x/giorno alle 07:00, 12:00, 17:00, 22:00
+      </div>
     </div>
 
     <div class="grid">
@@ -424,7 +438,7 @@ app.get('/', (req, res) => {
     </div>
 
     <div class="action-section">
-      <h2 style="margin-bottom: 15px;">⚡ Azioni Rapide</h2>
+      <h2 style="margin-bottom: 15px;">⚡ Azioni Manuali (oltre allo scheduling automatico)</h2>
       <div class="button-group">
         <button class="btn btn-primary" onclick="startScraping(5)">
           🔄 Test (5 pagine)
@@ -490,7 +504,7 @@ app.get('/', (req, res) => {
 
   <script>
     async function startScraping(pages) {
-      if (!confirm(\`Avviare scraping di \${pages} pagine?\`)) return;
+      if (!confirm(\`Avviare scraping manuale di \${pages} pagine?\`)) return;
       
       try {
         const response = await fetch('/api/scrape', {
@@ -502,7 +516,7 @@ app.get('/', (req, res) => {
         const data = await response.json();
         
         if (response.ok) {
-          alert('✓ Scraping avviato!');
+          alert('✓ Scraping manuale avviato!');
           startMonitoring();
         } else {
           alert('✗ Errore: ' + (data.message || data.error));
@@ -573,13 +587,11 @@ app.get('/', (req, res) => {
       refreshEvents();
       checkProgress();
       
-      // Auto-refresh ogni 5 secondi
       const interval = setInterval(() => {
         refreshEvents();
         checkProgress();
       }, 5000);
       
-      // Stop dopo 10 minuti se non attivo
       setTimeout(() => {
         fetch('/api/scraper/progress')
           .then(r => r.json())
@@ -591,11 +603,8 @@ app.get('/', (req, res) => {
       }, 10 * 60 * 1000);
     }
     
-    // Init
     refreshEvents();
     checkProgress();
-    
-    // Auto-refresh ogni 10 secondi
     setInterval(refreshEvents, 10000);
     setInterval(checkProgress, 5000);
   </script>
@@ -668,11 +677,12 @@ function formatUptime(seconds) {
   return `${minutes}m`;
 }
 
-// CRON (optional - disabled for manual control)
+// CRON SCHEDULING - SEMPRE ATTIVO
 if (process.env.ENABLE_CRON === 'true') {
+  // SCRAPING COMPLETO - Ogni notte alle 2 AM
   cron.schedule('0 2 * * *', () => {
     const processId = `cron_scrape_${Date.now()}`;
-    logger.log('[CRON] Starting scraping', 'INFO');
+    logger.log('[CRON] Starting nightly scraping (200 pages)', 'INFO');
     processTracker.start(processId, 'cron_scraping', { pages: 200 });
     
     const child = spawn('node', ['scraper_componenti_wpai_min.js', '200'], {
@@ -683,12 +693,32 @@ if (process.env.ENABLE_CRON === 'true') {
     processTracker.setPid(processId, child.pid);
     child.on('close', (code) => {
       processTracker.end(processId, code === 0 ? 'completed' : 'failed');
+      logger.log(`[CRON] Nightly scraping ${code === 0 ? 'completed' : 'failed'}`, code === 0 ? 'INFO' : 'ERROR');
     });
   });
   
-  logger.log('⏰ CRON ENABLED', 'INFO');
+  // STOCK CHECK - 4 volte al giorno (7, 12, 17, 22)
+  cron.schedule('0 7,12,17,22 * * *', () => {
+    const processId = `cron_stock_${Date.now()}`;
+    const hour = new Date().getHours();
+    logger.log(`[CRON] Starting stock check (${hour}:00)`, 'INFO');
+    processTracker.start(processId, 'cron_stock_check', { products: 'all' });
+    
+    const child = spawn('node', ['stock-checker-light.js', '5000'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: false
+    });
+    
+    processTracker.setPid(processId, child.pid);
+    child.on('close', (code) => {
+      processTracker.end(processId, code === 0 ? 'completed' : 'failed');
+      logger.log(`[CRON] Stock check ${code === 0 ? 'completed' : 'failed'}`, code === 0 ? 'INFO' : 'ERROR');
+    });
+  });
+  
+  logger.log('⏰ CRON ENABLED - Scraping: 2AM daily | Stock: 7,12,17,22 daily', 'INFO');
 } else {
-  logger.log('⏰ CRON DISABLED (manual mode)', 'INFO');
+  logger.log('⏰ CRON DISABLED (set ENABLE_CRON=true to activate)', 'INFO');
 }
 
 // Graceful shutdown
@@ -702,13 +732,12 @@ ensureDirectories();
 
 app.listen(PORT, () => {
   logger.log('╔════════════════════════════════════════╗', 'INFO');
-  logger.log('║   SCRAPER SERVER v3.1 DEBUG MODE      ║', 'INFO');
+  logger.log('║   SCRAPER SERVER v3.2 CRON MODE       ║', 'INFO');
   logger.log('╚════════════════════════════════════════╝', 'INFO');
   logger.log(`Server: http://localhost:${PORT}`, 'INFO');
   logger.log(`Environment: ${process.env.NODE_ENV || 'development'}`, 'INFO');
   logger.log(`Data Directory: ${dataDir}`, 'INFO');
-  logger.log(`Lock System: DISABLED`, 'INFO');
-  logger.log(`Live Events: ENABLED`, 'INFO');
+  logger.log(`CRON Status: ${process.env.ENABLE_CRON === 'true' ? 'ENABLED' : 'DISABLED'}`, 'INFO');
 });
 
 module.exports = app;
