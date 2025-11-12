@@ -1,7 +1,6 @@
 // scraper_componenti_wpai_min.js
-// Versione minimale per WP All Import - VERSIONE PULITA (Render-ready)
-// Esporta SOLO: SKU, Name, Regular price, Stock quantity, Images, Brand, Quality, Packaging
-// Fix: niente executablePath hard-coded; CSV atomico; log versione Chromium; IMAGES_BASE_URL opzionale
+// Versione finale ottimizzata - Mantiene struttura CSV esistente ma migliora estrazione dati
+// Recupera: prezzo finale corretto, stock reali, compatibilità, colore, brand migliorato
 
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -10,27 +9,25 @@ const path = require('path');
 const https = require('https');
 const createCsvWriter = require('csv-writer').createObjectCsvWriter;
 
-class ScraperWPAIMin {
+class ScraperWPAIFinal {
   constructor() {
     this.baseUrl = 'https://www.componentidigitali.com';
 
-    // Su Render usa /data, altrimenti ./data
     const dataDir = process.env.DATA_DIR || (process.env.RENDER ? '/data' : './data');
     this.outputDir = path.join(dataDir, 'output');
     this.imagesDir = path.join(this.outputDir, 'images');
 
-    // CSV atomico: scriviamo su tmp e poi rename
     this.csvFinalPath = path.join(this.outputDir, 'prodotti_latest.csv');
     this.csvTmpPath   = path.join(this.outputDir, 'prodotti_latest.tmp.csv');
     this.logPath      = path.join(this.outputDir, 'scraper.log');
 
-    // Se vuoi URL assoluti per le immagini (es. https://scraper.../images/)
-    // imposta IMAGES_BASE_URL nell'ambiente; altrimenti usiamo un path relativo "images/filename.jpg"
     this.imagesHostBaseUrl = process.env.IMAGES_BASE_URL || '';
 
     this.ensureDirs();
+    
+    // Manteniamo l'intestazione CSV esistente per compatibilità
     this.csvWriter = createCsvWriter({
-      path: this.csvTmpPath, // scriviamo su tmp
+      path: this.csvTmpPath,
       encoding: 'utf8',
       header: [
         { id: 'sku', title: 'SKU' },
@@ -69,7 +66,7 @@ class ScraperWPAIMin {
 
   getImageFilename(sku) {
     const cleanSku = String(sku || '').replace(/[^a-zA-Z0-9]/g, '_');
-    return `${cleanSku}.jpg;
+    return `${cleanSku}.jpg`;
   }
 
   buildImageCandidates(imageUrl) {
@@ -79,7 +76,7 @@ class ScraperWPAIMin {
     const id = m[1];
     const prefixMatch = imageUrl.match(/^(https?:\/\/[^\/]+)?(.*\/)[^\/]+\.JPG$/i);
     const prefix = prefixMatch ? prefixMatch[2] : '';
-   return [prefix + id + '_3.JPG', prefix + id + '_2.JPG', prefix + id + '_1.JPG', prefix + id + '.JPG'];
+    return [prefix + id + '_3.JPG', prefix + id + '_2.JPG', prefix + id + '_1.JPG', prefix + id + '.JPG'];
   }
 
   async downloadImage(url, filename) {
@@ -96,24 +93,24 @@ class ScraperWPAIMin {
             file.close();
             try {
               const size = fs.statSync(filepath).size;
-              if (size < 2000) { 
-                fs.unlinkSync(filepath); 
-                return resolve(false); 
+              if (size < 2000) {
+                fs.unlinkSync(filepath);
+                return resolve(false);
               }
               resolve(true);
             } catch {
               resolve(false);
             }
           });
-        } else { 
-          file.close(); 
-          fs.unlink(filepath, ()=>{}); 
-          resolve(false); 
+        } else {
+          file.close();
+          fs.unlink(filepath, () => {});
+          resolve(false);
         }
-      }).on('error', () => { 
-        file.close(); 
-        fs.unlink(filepath, ()=>{}); 
-        resolve(false); 
+      }).on('error', () => {
+        file.close();
+        fs.unlink(filepath, () => {});
+        resolve(false);
       });
     });
   }
@@ -146,12 +143,12 @@ class ScraperWPAIMin {
       const items = await page.evaluate(() => {
         const nodes = document.querySelectorAll('div[class*="prod"]');
         const out = [];
-       
+        
         nodes.forEach((el, i) => {
           const txt = el.textContent || '';
-         
+          
+          // === ESTRAZIONE NOME (invariata dalla versione originale) ===
           let name = 'Prodotto';
-         
           const productLink = el.querySelector('a[href*=".asp"]');
           if (productLink) {
             const linkText = productLink.textContent.trim();
@@ -162,7 +159,7 @@ class ScraperWPAIMin {
               name = productLink.title.trim();
             }
           }
-         
+          
           if (name === 'Prodotto') {
             const heading = el.querySelector('h2, h3, h4, .product-title, .prod-title, .nome-prodotto');
             if (heading) {
@@ -172,7 +169,7 @@ class ScraperWPAIMin {
               }
             }
           }
-         
+          
           if (name === 'Prodotto') {
             const titleEl = el.querySelector('[class*="title"], [class*="nome"], [class*="name"], .descrizione');
             if (titleEl) {
@@ -182,14 +179,14 @@ class ScraperWPAIMin {
               }
             }
           }
-         
+          
           if (name === 'Prodotto') {
             const descMatch = txt.match(/(?:descrizione|prodotto|articolo)[:.]?\s*([^€\n]{10,100})/i);
             if (descMatch) {
               name = descMatch[1].trim();
             }
           }
-         
+          
           if (name === 'Prodotto') {
             const img = el.querySelector('img[alt]');
             if (img && img.alt && img.alt.length > 3) {
@@ -197,6 +194,7 @@ class ScraperWPAIMin {
             }
           }
 
+          // === ESTRAZIONE SKU (invariata) ===
           let sku = '';
           const skuMatch = txt.match(/(?:cod\.?\s*art\.?|sku|codice)[:.]?\s*([A-Z0-9\-_]+)/i);
           if (skuMatch) {
@@ -213,73 +211,157 @@ class ScraperWPAIMin {
             sku = `AUTO_${Date.now()}_${i}`;
           }
 
+          // === ESTRAZIONE PREZZO MIGLIORATA ===
           let price = '';
-          const priceMatches = [
-            txt.match(/€\s*(\d+(?:[,.]\d{1,2})?)/),
-            txt.match(/(\d+(?:[,.]\d{1,2})?)\s*€/),
-            txt.match(/EUR\s*(\d+(?:[,.]\d{1,2})?)/i),
-            txt.match(/prezzo[:.]?\s*(\d+(?:[,.]\d{1,2})?)/i)
-          ];
-         
-          for (const match of priceMatches) {
-            if (match) {
-              price = match[1].replace(',', '.'); break;
+          let originalPrice = '';
+          
+          // Pattern 1: Cerca esplicitamente "€ XX,XX Sconto Y % € ZZ,ZZ"
+          const discountPattern = txt.match(/€\s*(\d+(?:[,.]\d{1,2})?)\s*[Ss]conto\s*\d+\s*%\s*€\s*(\d+(?:[,.]\d{1,2})?)/);
+          
+          if (discountPattern) {
+            // Prezzo originale barrato e prezzo scontato
+            originalPrice = discountPattern[1].replace(',', '.');
+            price = discountPattern[2].replace(',', '.'); // Prezzo finale scontato
+          } else {
+            // Pattern 2: Estrai TUTTI i prezzi e usa l'ULTIMO (quello finale IVA inclusa)
+            const priceRegex = /€\s*(\d+(?:[,.]\d{1,2})?)/g;
+            const pricesFound = [];
+            let match;
+            while ((match = priceRegex.exec(txt)) !== null) {
+              if (match[1]) pricesFound.push(match[1].replace(',', '.'));
+            }
+            
+            if (pricesFound.length > 0) {
+              // L'ultimo prezzo è tipicamente quello finale IVA inclusa
+              price = pricesFound[pricesFound.length - 1];
+              
+              // Se ci sono 2+ prezzi e il primo è maggiore, probabilmente c'è uno sconto
+              if (pricesFound.length >= 2) {
+                const firstPrice = parseFloat(pricesFound[0]);
+                const lastPrice = parseFloat(price);
+                if (firstPrice > lastPrice) {
+                  originalPrice = pricesFound[0];
+                }
+              }
+            } else {
+              // Fallback su altri pattern
+              const altMatch = txt.match(/EUR\s*(\d+(?:[,.]\d{1,2})?)/i) ||
+                              txt.match(/prezzo[:.]?\s*(\d+(?:[,.]\d{1,2})?)/i);
+              if (altMatch) {
+                price = altMatch[1].replace(',', '.');
+              }
             }
           }
 
+          // === ESTRAZIONE STOCK MIGLIORATA ===
           let stockQty = 1;
-          if (/non\s+disponibile|esaurito|sold\s*out/i.test(txt)) {
+          
+          // Prima cerca il pattern specifico "Disponibile (X PZ)"
+          const qtyParens = txt.match(/[Dd]isponibile\s*\(\s*(\d+)\s*PZ\s*\)/i);
+          if (qtyParens) {
+            stockQty = parseInt(qtyParens[1]);
+          } else if (/non\s+disponibile|esaurito|sold\s*out/i.test(txt)) {
             stockQty = 0;
           } else if (/disponibile|available|in\s*stock/i.test(txt)) {
-            stockQty = 999;
+            // Se dice solo "Disponibile" senza quantità, usa un valore prudente
+            stockQty = 10; // Più realistico di 999
           } else {
-            const qtyMatch = txt.match(/(?:pezzi|qty|quantità)[:.]?\s*(\d+)/i);
-            if (qtyMatch) stockQty = parseInt(qtyMatch[1]);
+            const qtyMatch = txt.match(/(?:pezzi|pz|qty|quantità)[:.]?\s*(\d+)/i);
+            if (qtyMatch) {
+              stockQty = parseInt(qtyMatch[1]);
+            }
           }
 
+          // === ESTRAZIONE IMMAGINE (invariata) ===
           const img = el.querySelector('img[src*="Foto"], img[src*="foto"], img[src*=".jpg"], img[src*=".JPG"], img[src*=".png"]');
           const imageUrl = img ? (img.src || img.getAttribute('src')) : '';
 
+          // === ESTRAZIONE BRAND MIGLIORATA ===
           let brand = '';
-          const brandMatch = txt.match(/(?:marca|brand|marchio)[:.]?\s*([A-Z][A-Za-z0-9\s&\-]+)/i);
-          if (brandMatch) brand = brandMatch[1].trim().split(/[\n\r]/)[0];
+          const brandMatch = txt.match(/(?:marca|brand|marchio|produttore)[:.]?\s*([A-Z][A-Za-z0-9\s&\-]+)/i);
+          if (brandMatch) {
+            brand = brandMatch[1].trim().split(/[\n\r€]/)[0].trim();
+          }
+          
+          // Cerca marche note se non trova brand generico
+          if (!brand) {
+            const knownBrands = ['Apple', 'Samsung', 'Huawei', 'Xiaomi', 'LG', 'Sony', 'Nokia', 
+                                'Motorola', 'Oppo', 'OnePlus', 'Google', 'Asus', 'Honor'];
+            for (const b of knownBrands) {
+              const brandRegex = new RegExp(`\\b${b}\\b`, 'i');
+              if (brandRegex.test(txt)) {
+                brand = b;
+                break;
+              }
+            }
+          }
 
+          // === ESTRAZIONE QUALITY ===
           let quality = '';
           const qualityMatch = txt.match(/(?:qualità|quality)[:.]?\s*(\w+)/i);
           if (qualityMatch) quality = qualityMatch[1].trim();
 
+          // === ESTRAZIONE PACKAGING ===
           let packaging = '';
-          const packMatch = txt.match(/(?:confezione|packaging|package)[:.]?\s*([^\n\r€]{3,50})/i);
-          if (packMatch) packaging = packMatch[1].trim();
+          const packMatch = txt.match(/(?:confezione|packaging|package|conf\.)[:.]?\s*([^\n\r€]{3,50})/i);
+          if (packMatch) {
+            packaging = packMatch[1].trim();
+          }
 
+          // === ESTRAZIONE COMPATIBILITÀ ===
+          let compatibility = '';
+          // Pattern per iPhone, Samsung, etc.
+          const compatMatch = txt.match(/(?:compatibil[eità]+|[Pp]er|[Ff]or)[:.]?\s*(iPhone\s+[^\s,€\n]+|Samsung\s+[^\s,€\n]+|Huawei\s+[^\s,€\n]+|Xiaomi\s+[^\s,€\n]+)/i);
+          if (compatMatch) {
+            compatibility = compatMatch[1].trim();
+          } else {
+            // Cerca modelli specifici
+            const modelMatch = txt.match(/\b(iPhone\s+\d+[^\s,]*|Galaxy\s+[A-Z]\d+|Mi\s+\d+|P\d+\s+Pro)\b/i);
+            if (modelMatch) {
+              compatibility = modelMatch[1].trim();
+            }
+          }
+
+          // === ESTRAZIONE COLORE ===
+          let color = '';
+          const colorMatch = txt.match(/(?:colore|color|colour)[:.]?\s*([A-Za-z]+|nero|bianco|rosso|blu|verde|giallo|grigio|oro|argento)/i);
+          if (colorMatch) {
+            color = colorMatch[1].trim();
+          }
+
+          // === PULIZIA NOME FINALE ===
           if (name.includes(sku) && name.length > sku.length + 5) {
             name = name.replace(sku, '').trim();
           }
           name = name.replace(/€\s*\d+[,.]?\d*/, '').trim();
           name = name.replace(/[^\w\s\-\(\)\/&.,àèéìòù]/gi, ' ').replace(/\s+/g, ' ').trim();
-         
+          
           if (name === 'Prodotto' || name.length < 5) {
             const typeMatch = txt.match(/(?:display|lcd|batteria|battery|cover|cable|cavo|vetro|glass|flex)/i);
             name = typeMatch ? `${typeMatch[0]} ${sku}` : `Componente ${sku}`;
           }
 
+          // === OUTPUT CON DATI MIGLIORATI ===
           out.push({
             sku: sku.substring(0, 50),
             name: name.substring(0, 200),
-            regular_price: price,
+            regular_price: price, // Prezzo finale (eventualmente scontato)
+            original_price: originalPrice, // Prezzo originale se c'è sconto
             stock_quantity: stockQty,
             image_url: imageUrl,
             brand: brand.substring(0, 50),
             quality: quality.substring(0, 30),
-            packaging: packaging.substring(0, 100)
+            packaging: packaging.substring(0, 100),
+            compatibility: compatibility.substring(0, 100),
+            color: color.substring(0, 30)
           });
         });
-       
+        
         return out;
       });
 
       if (items.length > 0) {
-        this.log(`Trovati ${items.length} prodotti. Esempio: SKU=${items[0].sku}, Name="${items[0].name}"`);
+        this.log(`Trovati ${items.length} prodotti. Esempio: SKU=${items[0].sku}, Name="${items[0].name}", Price=${items[0].regular_price}`);
       }
 
       for (const p of items) {
@@ -297,6 +379,24 @@ class ScraperWPAIMin {
           }
         }
 
+        // Costruiamo tags intelligenti basati su compatibilità e tipo prodotto
+        let tags = '';
+        if (p.compatibility) {
+          tags = `compatible-${p.compatibility.toLowerCase().replace(/\s+/g, '-').replace(/,/g, '-')}`;
+        }
+        if (p.brand) {
+          tags = tags ? `${tags} ${p.brand.toLowerCase().replace(/,/g, '-')}` : p.brand.toLowerCase().replace(/,/g, '-');
+        }
+
+        // Short description migliorata
+        let shortDesc = p.name;
+        if (p.brand) shortDesc += ` - ${p.brand}`;
+        if (p.compatibility) shortDesc += ` - Compatibile con ${p.compatibility}`;
+        if (p.original_price && p.regular_price !== p.original_price) {
+          const discount = Math.round((1 - parseFloat(p.regular_price) / parseFloat(p.original_price)) * 100);
+          if (discount > 0) shortDesc += ` - Sconto ${discount}%`;
+        }
+
         this.products.push({
           sku: this.cleanText(p.sku),
           name: this.cleanText(p.name),
@@ -305,15 +405,15 @@ class ScraperWPAIMin {
           stock_status: p.stock_quantity > 0 ? 'instock' : 'outofstock',
           images: imagesField,
           categories: 'Componenti',
-          tags: '',
-          short_description: `${p.name} - ${p.brand}`.substring(0, 150),
+          tags: tags.substring(0, 100),
+          short_description: shortDesc.substring(0, 150),
           product_type: 'simple',
           brand: this.cleanText(p.brand),
           quality: this.cleanText(p.quality),
           packaging: this.cleanText(p.packaging),
-          'attribute:pa_colore': '',
-          'attribute:pa_modello': '',
-          'attribute:pa_compatibilita': ''
+          'attribute:pa_colore': this.cleanText(p.color),
+          'attribute:pa_modello': '', // Richiede pagina dettaglio
+          'attribute:pa_compatibilita': this.cleanText(p.compatibility)
         });
       }
 
@@ -322,13 +422,13 @@ class ScraperWPAIMin {
         const m = href.match(/pg=(\d+)/);
         const curr = m ? parseInt(m[1]) : 1;
         const next = curr + 1;
-       
+        
         const link = Array.from(document.querySelectorAll('a[href*="pg="]')).find(a => {
           const mm = a.href.match(/pg=(\d+)/);
           return mm && parseInt(mm[1]) === next;
         });
         if (link) return link.href;
-       
+        
         if (curr < 200) {
           return href.includes('&pg=')
             ? href.replace(/pg=\d+/, 'pg=' + next)
@@ -344,12 +444,11 @@ class ScraperWPAIMin {
     }
   }
 
-  async scrapeAll(startUrl, maxPages=20) {
-    // NESSUN executablePath: Playwright userà quello di sistema (o ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH)
+  async scrapeAll(startUrl, maxPages = 20) {
     const browser = await chromium.launch({
       headless: true,
       args: [
-        '--no-sandbox', 
+        '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
@@ -364,10 +463,10 @@ class ScraperWPAIMin {
 
       const version = await browser.version();
       this.log(`Chromium ${version} avviato`);
-   
+      
       let url = startUrl;
       let n = 0;
-   
+      
       while (url && n < maxPages) {
         n++;
         this.log(`=== PAGINA ${n}/${maxPages} ===`);
@@ -393,23 +492,30 @@ class ScraperWPAIMin {
       return;
     }
     await this.csvWriter.writeRecords(this.products);
-    // rename atomico
+    
+    // Rename atomico
     try {
       await fsp.rename(this.csvTmpPath, this.csvFinalPath);
     } catch (err) {
-      // fallback: copia e cancella
-      await fsp.copyFile(this.csvTmpPath, this.csvFinalPath).catch(()=>{});
-      await fsp.unlink(this.csvTmpPath).catch(()=>{});
+      await fsp.copyFile(this.csvTmpPath, this.csvFinalPath).catch(() => {});
+      await fsp.unlink(this.csvTmpPath).catch(() => {});
     }
+    
     this.log(`CSV salvato: ${this.csvFinalPath} (${this.products.length} righe)`);
-   
+    
+    // Statistiche migliorate
     const withNames = this.products.filter(p => p.name && p.name !== 'Prodotto').length;
     const withPrices = this.products.filter(p => p.regular_price).length;
     const withBrands = this.products.filter(p => p.brand).length;
-    this.log(`Statistiche: ${withNames} con nome valido, ${withPrices} con prezzo, ${withBrands} con brand`);
+    const withCompat = this.products.filter(p => p['attribute:pa_compatibilita']).length;
+    const withColor = this.products.filter(p => p['attribute:pa_colore']).length;
+    const withRealStock = this.products.filter(p => p.stock_quantity > 0 && p.stock_quantity !== 10).length;
+    
+    this.log(`Statistiche: ${withNames} con nome, ${withPrices} con prezzo, ${withBrands} con brand`);
+    this.log(`Attributi: ${withCompat} con compatibilità, ${withColor} con colore, ${withRealStock} con stock preciso`);
   }
 
-  async run(maxPages=20) {
+  async run(maxPages = 20) {
     const startUrl = `${this.baseUrl}/default.asp?cmdString=iphone&cmd=searchProd&bFormSearch=1`;
     await this.scrapeAll(startUrl, maxPages);
     await this.saveCSV();
@@ -417,7 +523,7 @@ class ScraperWPAIMin {
 }
 
 const maxPages = process.argv[2] ? parseInt(process.argv[2]) : 20;
-new ScraperWPAIMin().run(maxPages).catch(err => {
+new ScraperWPAIFinal().run(maxPages).catch(err => {
   console.error('[SCRAPER FATAL]:', err);
   process.exit(1);
 });
