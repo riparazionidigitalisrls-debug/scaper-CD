@@ -1,19 +1,15 @@
 {
-  "name": "scraper-componenti-wpai",
-  "version": "3.0.0",
-  "description": "Scraper componenti digitali FIXED - Sistema completo con lock management",
+  "name": "scraper-componenti-cd",
+  "version": "3.3.0",
+  "description": "Scraper Componenti Digitali - Disk persistente + Dashboard real-time",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "scrape": "node scraper_componenti_wpai_min.js",
     "scrape:test": "node scraper_componenti_wpai_min.js 5",
-    "scrape:sync": "node scraper_componenti_wpai_min.js 20",
-    "scrape:medium": "node scraper_componenti_wpai_min.js 50",
+    "scrape:medium": "node scraper_componenti_wpai_min.js 20",
     "scrape:full": "node scraper_componenti_wpai_min.js 200",
     "stock:test": "node stock-checker-light.js 100",
-    "stock:medium": "node stock-checker-light.js 1000",
-    "stock:full": "node stock-checker-light.js 5000",
-    "dev": "NODE_ENV=development node server.js"
+    "stock:full": "node stock-checker-light.js 5000"
   },
   "dependencies": {
     "playwright": "^1.41.0",
@@ -22,15 +18,8 @@
     "node-cron": "^3.0.3"
   },
   "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=9.0.0"
+    "node": ">=18.0.0"
   },
-  "keywords": [
-    "scraper",
-    "e-commerce",
-    "stock-checker",
-    "automation"
-  ],
-  "author": "Open Lab - Tanos",
+  "author": "Riparazioni Digitali",
   "license": "ISC"
 }
