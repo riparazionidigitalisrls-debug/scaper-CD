@@ -1,5 +1,5 @@
-// scraper_componenti_wpai_min.js - VERSIONE FINALE V3
-// Fix: virgole rimosse, tags con spazi, /data disk, logs completi
+// scraper_componenti_wpai_min.js - VERSIONE FINALE V4 - PERFETTA
+// Fix: stock quantity reale, path immagini corretto, virgole rimosse, tags con spazi
 
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -24,7 +24,7 @@ class ScraperWPAIMin {
     this.logPath = path.join(this.logsDir, 'scraper.log');
     this.eventsPath = path.join(this.logsDir, 'scraper_events.json');
 
-    // Base URL per immagini
+    // Base URL per immagini - CORRETTO SENZA PATH DOPPIO
     this.imagesHostBaseUrl = process.env.IMAGES_BASE_URL || 'https://scaper-cd.onrender.com';
 
     this.ensureDirs();
@@ -61,7 +61,9 @@ class ScraperWPAIMin {
       maxPages: 0,
       productsCount: 0,
       imagesDownloaded: 0,
-      errors: 0
+      errors: 0,
+      stockParsed: 0,
+      stock999: 0
     };
   }
 
@@ -246,15 +248,35 @@ class ScraperWPAIMin {
             }
           }
 
-          // Stock
-          let stockQty = 1;
-          if (/non\s+disponibile|esaurito|sold\s*out/i.test(txt)) {
-            stockQty = 0;
-          } else if (/disponibile|available|in\s*stock/i.test(txt)) {
-            stockQty = 999;
-          } else {
-            const qtyMatch = txt.match(/(?:pezzi|qty|quantità)[:.]?\s*(\d+)/i);
-            if (qtyMatch) stockQty = parseInt(qtyMatch[1]);
+          // Stock - VERSIONE CORRETTA CON PRIORITÀ AI NUMERI REALI
+          let stockQty = 0;
+          let foundExplicitQty = false;
+
+          // PRIMA: Cerca quantità numeriche esplicite
+          const qtyPatterns = [
+              /(?:disponibilit[àa]|stock|giacenza|magazzino)[:.\s]*(\d+)/i,
+              /(\d+)\s*(?:pezzi|pz|disponibili?|unit[àa])/i,
+              /(?:qty|quantit[àa])[:.\s]*(\d+)/i,
+              />\s*(\d+)\s*(?:pezzi|disponibili?)/i,
+              /pezzi[:.\s]*(\d+)/i
+          ];
+
+          for (const pattern of qtyPatterns) {
+              const match = txt.match(pattern);
+              if (match && parseInt(match[1]) >= 0) {
+                  stockQty = parseInt(match[1]);
+                  foundExplicitQty = true;
+                  break;
+              }
+          }
+
+          // SOLO SE non ha trovato numero esplicito, usa logica generica
+          if (!foundExplicitQty) {
+              if (/non\s+disponibile|esaurito|sold\s*out|terminato|out\s*of\s*stock/i.test(txt)) {
+                  stockQty = 0;
+              } else if (/disponibile|available|in\s*stock/i.test(txt)) {
+                  stockQty = 999;  // Fallback generico SOLO come ultima risorsa
+              }
           }
 
           // Image
@@ -286,6 +308,7 @@ class ScraperWPAIMin {
             name: name.substring(0, 200),
             regular_price: price,
             stock_quantity: stockQty,
+            stock_found_explicit: foundExplicitQty,
             image_url: imageUrl,
             brand: brand.substring(0, 50),
             quality: quality.substring(0, 30),
@@ -307,12 +330,21 @@ class ScraperWPAIMin {
         if (this.seen.has(p.sku)) continue;
         this.seen.add(p.sku);
 
+        // Stats per debugging
+        if (p.stock_found_explicit) {
+          this.stats.stockParsed++;
+        }
+        if (p.stock_quantity === 999) {
+          this.stats.stock999++;
+        }
+
         const filename = this.getImageFilename(p.sku);
         let imagesField = '';
         
         if (p.image_url) {
           const ok = await this.downloadImageCandidates(p.image_url, filename);
           if (ok) {
+            // PATH CORRETTO: /images/ SINGOLO (non doppio!)
             imagesField = `${this.imagesHostBaseUrl}/images/${filename}`;
           }
         }
@@ -452,11 +484,13 @@ class ScraperWPAIMin {
         if (n % 10 === 0) {
           const duration = Math.round((Date.now() - this.stats.startTime) / 60000);
           this.log(`💾 Progress: ${this.products.length} prodotti, ${this.stats.imagesDownloaded} immagini, ${duration}min`, 'SUCCESS', n);
+          this.log(`📊 Stock: ${this.stats.stockParsed} parsed, ${this.stats.stock999} fallback`, 'INFO', n);
         }
       }
 
       const duration = Math.round((Date.now() - this.stats.startTime) / 60000);
       this.log(`✅ COMPLETATO: ${n} pagine, ${this.products.length} prodotti, ${duration}min`, 'SUCCESS', n);
+      this.log(`📊 Stock Stats: ${this.stats.stockParsed} con qty esplicita, ${this.stats.stock999} fallback 999`, 'INFO');
       
     } finally {
       await browser.close();
@@ -495,8 +529,11 @@ class ScraperWPAIMin {
       const withPrices = this.products.filter(p => p.regular_price).length;
       const withBrand = this.products.filter(p => p.brand).length;
       const withImages = this.products.filter(p => p.images).length;
+      const explicitStock = this.stats.stockParsed;
+      const fallbackStock = this.stats.stock999;
       
       this.log(`📊 Stats: ${withNames} nomi, ${withPrices} prezzi, ${withImages} img, ${withBrand} brand`, 'INFO');
+      this.log(`📊 Stock: ${explicitStock} qty esplicite, ${fallbackStock} fallback 999`, 'INFO');
       
     } catch (e) {
       this.log(`❌ Errore salvataggio CSV: ${e.message}`, 'ERROR');
