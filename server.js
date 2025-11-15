@@ -1,4 +1,4 @@
-// server.js - v3.3 FINAL - Dashboard + CRON + Logging completo
+// server.js - v3.4 FIXED - Dashboard + CRON + Fix Path Immagini
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
@@ -21,6 +21,33 @@ const scraperProgressPath = path.join(outputDir, 'scraper_progress.json');
 
 // Middleware
 app.use(express.json());
+
+// ============================================================================
+// MIDDLEWARE FIX PATH DOPPIO IMMAGINI - CRITICO!
+// Questo middleware intercetta TUTTE le richieste alle immagini e fixa il path
+// ============================================================================
+app.use('/images', (req, res, next) => {
+  let originalUrl = req.url;
+  let fixed = false;
+  
+  // Fix path doppio: /images/26324.jpg richiesto come /images/images/26324.jpg
+  // Il path arriva già senza il prefisso /images quindi cerchiamo solo /images/
+  if (originalUrl.includes('/images/')) {
+    const newUrl = originalUrl.replace(/\/images\//g, '/');
+    if (newUrl !== originalUrl) {
+      req.url = newUrl;
+      fixed = true;
+    }
+  }
+  
+  // Log solo se abbiamo fixato qualcosa (per debug)
+  if (fixed) {
+    console.log(`[IMAGE FIX] ${originalUrl} → ${req.url}`);
+  }
+  
+  next();
+});
+
 app.use('/output', express.static(outputDir));
 app.use('/images', express.static(imagesDir));
 
@@ -176,7 +203,7 @@ app.get('/', (req, res) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Scraper CD - Dashboard v3.3</title>
+  <title>Scraper CD - Dashboard v3.4</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { 
@@ -207,6 +234,14 @@ app.get('/', (req, res) => {
       padding: 4px 12px; 
       border-radius: 4px;
       font-weight: normal;
+    }
+    .fix-badge {
+      font-size: 0.35em;
+      background: #48bb78;
+      color: white;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-weight: bold;
     }
     .cron-info {
       background: ${cronEnabled ? '#e6fffa' : '#fff5f5'};
@@ -329,12 +364,13 @@ app.get('/', (req, res) => {
     <div class="header">
       <h1>
         🔧 Scraper Componenti Digitali
-        <span class="version">v3.3 FINAL</span>
+        <span class="version">v3.4</span>
+        <span class="fix-badge">PATH FIX</span>
       </h1>
       <div class="cron-info">
         ${cronEnabled ? 
-          '⏰ <b>CRON ATTIVO</b>: Scraping automatico ogni 2 ore dalle 7:00 alle 19:00 (7 esecuzioni al giorno)' : 
-          '⚠️ <b>CRON DISATTIVO</b>: Imposta ENABLE_CRON=true per attivare lo scraping automatico'
+          '⏰ <b>CRON ATTIVO</b>: Scraping automatico ogni 2 ore dalle 7:00 alle 19:00 (7 esecuzioni al giorno)<br>🔧 <b>IMAGE PATH FIX</b>: Middleware attivo per correggere automaticamente path doppi' : 
+          '⚠️ <b>CRON DISATTIVO</b>: Imposta ENABLE_CRON=true per attivare lo scraping automatico<br>🔧 <b>IMAGE PATH FIX</b>: Middleware attivo per correggere automaticamente path doppi'
         }
       </div>
     </div>
@@ -385,7 +421,8 @@ app.get('/', (req, res) => {
         </button>
       </div>
       <p style="color: #666; font-size: 0.9em; margin-top: 10px;">
-        💾 CSV disponibile sempre a: <a href="${baseUrl}/output/prodotti_latest.csv" target="_blank">${baseUrl}/output/prodotti_latest.csv</a>
+        💾 CSV disponibile sempre a: <a href="${baseUrl}/output/prodotti_latest.csv" target="_blank">${baseUrl}/output/prodotti_latest.csv</a><br>
+        🔧 <strong>Middleware attivo</strong>: Tutti i path doppi vengono corretti automaticamente (es: /images/images/ → /images/)
       </p>
     </div>
 
@@ -542,10 +579,8 @@ app.get('/', (req, res) => {
   `);
 });
 
-// CRON SCHEDULING - MODIFICATO: OGNI 2 ORE DALLE 7:00 ALLE 19:00
+// CRON SCHEDULING - OGNI 2 ORE DALLE 7:00 ALLE 19:00
 if (process.env.ENABLE_CRON === 'true') {
-  // Scraping alle ore: 7, 9, 11, 13, 15, 17, 19 (7 esecuzioni al giorno)
-  // Sintassi cron: '0 7-19/2 * * *' significa minuto 0, ogni 2 ore dalle 7 alle 19
   cron.schedule('0 7-19/2 * * *', () => {
     const now = new Date();
     const hour = now.getHours();
@@ -578,7 +613,7 @@ process.on('SIGTERM', () => {
 // Ensure directories
 [outputDir, logsDir, imagesDir].forEach(dir => {
   if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true});
     logger.log(`✓ Created: ${dir}`, 'INFO');
   }
 });
@@ -586,11 +621,12 @@ process.on('SIGTERM', () => {
 // Start
 app.listen(PORT, () => {
   logger.log('╔════════════════════════════════════════╗', 'INFO');
-  logger.log('║   SCRAPER SERVER v3.3 FINAL           ║', 'INFO');
+  logger.log('║   SCRAPER SERVER v3.4 PATH FIX        ║', 'INFO');
   logger.log('╚════════════════════════════════════════╝', 'INFO');
   logger.log(`Server: http://localhost:${PORT}`, 'INFO');
   logger.log(`Data Directory: ${dataDir}`, 'INFO');
   logger.log(`CRON: ${process.env.ENABLE_CRON === 'true' ? 'ENABLED' : 'DISABLED'}`, 'INFO');
+  logger.log(`🔧 IMAGE PATH FIX: ACTIVE`, 'INFO');
 });
 
 module.exports = app;
